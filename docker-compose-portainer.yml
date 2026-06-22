@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  apollo-device-provisioner:
+    image: marcandres888/apollo-device-provisioner:latest
+    container_name: apollo-device-provisioner
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Python path
+      PYTHONPATH: /app
+      
+      # Application Settings
+      APP_NAME: Apollo Device Provisioner
+      APP_VERSION: 1.0.0
+      DEBUG: "False"
+      LOG_LEVEL: INFO
+      
+      # Database connection to external PostgreSQL server
+      DATABASE_URL: postgresql+asyncpg://zeepuser:zeeppassword123@10.42.4.19:5432/device_provisioning
+      ALEMBIC_DATABASE_URL: postgresql+psycopg2://zeepuser:zeeppassword123@10.42.4.19:5432/device_provisioning
+      DATABASE_POOL_SIZE: 5
+      DATABASE_MAX_OVERFLOW: 10
+      
+      # Redis connection (if needed)
+      REDIS_URL: redis://10.42.4.19:6379/0
+      
+      # Celery (if needed)
+      CELERY_BROKER_URL: redis://10.42.4.19:6379/1
+      CELERY_RESULT_BACKEND: redis://10.42.4.19:6379/2
+      
+      # API Configuration
+      API_V1_PREFIX: /api/v1
+      CORS_ORIGINS: '["*"]'
+      
+      # Device Credentials (if needed)
+      DEFAULT_DEVICE_USERNAME: admin
+      DEFAULT_DEVICE_PASSWORD: admin
+      
+
+    command: >
+      sh -c "
+        echo '========================================' &&
+        echo 'Waiting for database connection...' &&
+        echo 'Database: 10.42.4.19:5432' &&
+        echo '========================================' &&
+        sleep 10 &&
+        echo 'Testing database connectivity...' &&
+        until pg_isready -h 10.42.4.19 -p 5432 -U zeepuser; do
+          echo 'Database is unavailable - waiting...'
+          sleep 2
+        done &&
+        echo '✅ Database is ready!' &&
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo '✅ Migrations complete!' &&
+        echo 'Starting Apollo Device Provisioner...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+    networks:
+      - portainer_default
+
+networks:
+  portainer_default:
+    external: true

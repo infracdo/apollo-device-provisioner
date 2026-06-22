@@ -1,0 +1,63 @@
+# FastAPI and web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.4.2
+pydantic-settings==2.0.3
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+
+# Caching and task queue
+redis==5.0.1
+celery==5.3.4
+flower==2.0.1
+
+# Kafka
+kafka-python==2.0.2
+
+# Device communication
+paramiko==3.3.1
+telnetlib3==2.0.4
+httpx==0.25.1
+pysnmp==4.4.12
+pyasn1==0.4.8
+
+# Mikrotik RouterOS
+librouteros==3.2.1
+
+# Ansible
+ansible-runner==2.3.4
+ansible-core==2.13.13
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Utilities
+python-dotenv==1.0.0
+aiofiles==23.2.1
+
+# Logging and monitoring
+loguru==0.7.2
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.1
+faker==20.0.3
+factory-boy==3.3.0
+
+# Code quality
+black==23.11.0
+flake8==6.1.0
+pylint==3.0.2
+mypy==1.7.0
+
+# Documentation
+mkdocs==1.5.3
+mkdocs-material==9.4.10

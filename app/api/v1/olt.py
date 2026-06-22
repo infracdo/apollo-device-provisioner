@@ -1,0 +1,1360 @@
+"""
+OLT API Endpoints
+
+RESTful API endpoints for OLT device operations.
+"""
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from typing import List, Dict, Any
+from datetime import datetime
+from app.schemas.olt_schemas import (
+    ONUProvisionRequest,
+    ONUProvisionResponse,
+    ONURemoveRequest,
+    ONUStatusResponse,
+    VLANResponse,
+    BoardResponse,
+    ONTListResponse,
+    UnconfiguredONUListResponse,
+    TcontProfileRequest,
+    TcontProfileResponse,
+    VlanProfileRequest,
+    VlanProfileResponse,
+    ProfileListResponse,
+    ProfileDeleteResponse,
+    PortInfoResponse,
+    ONURegistrationRequest,
+    ONURegistrationResponse,
+    UnregisterOfflineONURequest,
+    UnregisterOfflineONUResponse
+)
+from app.services.device_factory import DeviceFactory
+from app.utils.logging import logger
+from app.utils.ont_mapper import normalize_ont_response, normalize_unconfigured_ont_response
+from app.utils.profile_mapper import normalize_profile_list
+from app.utils.snmp_onu_checker import SNMPONUChecker
+from app.utils.kafka import publish_to_kafka
+from app.database import get_db
+from app.models import Device
+
+router = APIRouter(prefix="/olt")
+
+
+def handle_device_error(e: Exception, context: str, device_id: int = None) -> HTTPException:
+    """
+    Convert device operation exceptions to appropriate HTTP exceptions.
+    
+    Args:
+        e: The caught exception
+        context: Description of what operation failed
+        device_id: Optional device ID for logging
+        
+    Returns:
+        HTTPException with appropriate status code and message
+    """
+    device_info = f"device {device_id}" if device_id else "device"
+    
+    if isinstance(e, HTTPException):
+        return e
+    elif isinstance(e, PermissionError):
+        logger.error(f"Authentication failed for {device_info}: {str(e)}")
+        return HTTPException(
+            status_code=401,
+            detail=f"Authentication failed - incorrect username/password configured for this device. Please verify the device credentials in the database. Details: {str(e)}"
+        )
+    elif isinstance(e, ConnectionError):
+        logger.error(f"Connection error for {device_info}: {str(e)}")
+        return HTTPException(
+            status_code=503,
+            detail=f"Could not connect to device: {str(e)}"
+        )
+    elif isinstance(e, TimeoutError):
+        logger.error(f"Timeout error for {device_info}: {str(e)}")
+        return HTTPException(
+            status_code=504,
+            detail=f"Device operation timed out: {str(e)}"
+        )
+    else:
+        logger.error(f"{context} for {device_info}: {str(e)}")
+        return HTTPException(
+            status_code=500,
+            detail=f"{context}: {str(e)}"
+        )
+
+
+@router.post("/provision-onu", response_model=ONUProvisionResponse)
+async def provision_onu(
+    request: ONUProvisionRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Provision an ONU on OLT device
+    
+    This endpoint is device-agnostic and works with:
+    - Huawei OLT
+    - BDCOM OLT
+    - ZTE OLT
+    - SmartOLT
+    """
+    try:
+        # Get device configuration from database
+        # For now, using mock data
+        device_config = {
+            'id': request.device_id,
+            'ip_address': '192.168.1.1',  # Would come from database
+            'port': 22,
+            'username': 'admin',
+            'password': 'admin',
+            'manufacturer': 'huawei'  # Would come from database
+        }
+        
+        # Create adapter using factory
+        adapter = DeviceFactory.create_olt_adapter(
+            manufacturer=device_config['manufacturer'],
+            device_config=device_config
+        )
+        
+        # Use async context manager for automatic connection handling
+        async with adapter:
+            result = await adapter.provision_onu(request.onu_config.model_dump())
+        
+        return ONUProvisionResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Error provisioning ONU: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/onu")
+async def remove_onu(request: ONURemoveRequest):
+    """Remove/unprovision an ONU"""
+    try:
+        # Similar implementation to provision_onu
+        device_config = {
+            'id': request.device_id,
+            'ip_address': '192.168.1.1',
+            'port': 22,
+            'username': 'admin',
+            'password': 'admin',
+            'manufacturer': 'huawei'
+        }
+        
+        adapter = DeviceFactory.create_olt_adapter(
+            manufacturer=device_config['manufacturer'],
+            device_config=device_config
+        )
+        
+        async with adapter:
+            result = await adapter.remove_onu(request.onu_location.model_dump())
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error removing ONU: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/onu/{device_id}/status", response_model=ONTListResponse)
+async def get_onts_status(
+    device_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all ONUs/ONTs status from an OLT device.
+    
+    Returns a standardized list of all configured ONUs with their current status,
+    signal levels, and other metrics. The response format is consistent across
+    all OLT manufacturers (RicherLink, ZTE, Huawei, BDCOM, etc.).
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Get ONTs list from adapter (manufacturer-specific format)
+            raw_onts = await adapter.get_onts()
+            
+            # Normalize each ONT to standardized format
+            standardized_onts = [
+                normalize_ont_response(device.manufacturer, ont_data)
+                for ont_data in raw_onts
+            ]
+            
+            logger.info(f"Retrieved and normalized {len(standardized_onts)} ONUs from device {device.name}")
+            
+            return ONTListResponse(
+                device_id=device_id,
+                device_name=device.name,
+                manufacturer=device.manufacturer,
+                total_onts=len(standardized_onts),
+                onts=standardized_onts
+            )
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except Exception as e:
+        raise handle_device_error(e, "Failed to get ONU status", device_id)
+
+
+@router.get("/onu/{device_id}/unconfigured", response_model=UnconfiguredONUListResponse)
+async def get_unconfigured_onus(
+    device_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all unconfigured ONUs detected by the OLT.
+    
+    Returns a standardized list of ONUs that are connected to the OLT but not yet
+    provisioned/configured. These are auto-discovered ONUs waiting to be authorized.
+    The response format is consistent across all OLT manufacturers (ZTE, RicherLink, 
+    Huawei, BDCOM, etc.).
+    
+    This is useful for:
+    - Discovering new ONUs connected to the network
+    - Identifying unauthorized ONUs
+    - Provisioning workflows where you need to see available ONUs
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Get unconfigured ONUs from adapter (manufacturer-specific format)
+            raw_uncfg_onus = await adapter.get_unconfigured_onts()
+            
+            # Normalize each unconfigured ONU to standardized format
+            standardized_uncfg_onus = [
+                normalize_unconfigured_ont_response(device.manufacturer, onu_data)
+                for onu_data in raw_uncfg_onus
+            ]
+            
+            logger.info(f"Retrieved and normalized {len(standardized_uncfg_onus)} unconfigured ONUs from device {device.name}")
+            
+            return UnconfiguredONUListResponse(
+                device_id=device_id,
+                device_name=device.name,
+                manufacturer=device.manufacturer,
+                total_unconfigured=len(standardized_uncfg_onus),
+                unconfigured_onus=standardized_uncfg_onus
+            )
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except Exception as e:
+        raise handle_device_error(e, "Failed to get unconfigured ONUs", device_id)
+
+
+@router.post("/onu/{device_id}/{ont_id}/reboot")
+async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int):
+    """Reboot an ONU"""
+    try:
+        device_config = {
+            'id': device_id,
+            'ip_address': '192.168.1.1',
+            'port': 22,
+            'username': 'admin',
+            'password': 'admin',
+            'manufacturer': 'huawei'
+        }
+        
+        adapter = DeviceFactory.create_olt_adapter(
+            manufacturer=device_config['manufacturer'],
+            device_config=device_config
+        )
+        
+        async with adapter:
+            result = await adapter.reboot_ont({
+                'slot': slot,
+                'port': port,
+                'ont_id': ont_id
+            })
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error rebooting ONU: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/vlans/{device_id}", response_model=List[VLANResponse])
+async def get_vlans(device_id: int):
+    """Get VLANs configured on OLT"""
+    # Implementation
+    return []
+
+
+@router.get("/boards/{device_id}", response_model=List[BoardResponse])
+async def get_boards(device_id: int):
+    """Get board/card information from OLT"""
+    # Implementation
+    return []
+
+
+# ============================================================================
+# GPON Profile Management Endpoints
+# ============================================================================
+
+@router.post("/profiles/tcont", response_model=TcontProfileResponse)
+async def create_tcont_profile(
+    request: TcontProfileRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a T-CONT (Traffic Container) profile on an OLT device.
+    
+    T-CONT profiles define bandwidth allocation for ONUs. Different types provide
+    different QoS guarantees:
+    
+    - Type 1 (Fixed): Guaranteed fixed bandwidth
+    - Type 2 (Assured): Guaranteed minimum + burst capability
+    - Type 3 (Non-Assured): Best effort with no guarantee
+    - Type 4 (Best-Effort): Shared bandwidth, no guarantee
+    - Type 5 (Mixed): Combination of fixed and assured
+    
+    **Example ZTE Command Generated:**
+    ```
+    configure terminal
+    gpon
+    profile tcont 10M type 4 maximum 102400
+    ```
+    
+    **Bandwidth Calculation:**
+    - 1 Mbps ≈ 125,000 bytes
+    - 10 Mbps ≈ 1,250,000 bytes (or use 102400 for ~800 Kbps)
+    - 100 Mbps ≈ 12,500,000 bytes
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == request.device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {request.device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Create T-CONT profile
+            profile_config = {
+                'profile_name': request.profile_name,
+                'profile_type': request.profile_type,
+                'maximum_bandwidth': request.maximum_bandwidth
+            }
+            
+            result = await adapter.create_tcont_profile(profile_config)
+            
+            logger.info(f"T-CONT profile creation result for device {device.name}: {result['status']}")
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            
+            return TcontProfileResponse(**result)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating T-CONT profile for device {request.device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create T-CONT profile: {str(e)}"
+        )
+
+
+@router.post("/profiles/vlan", response_model=VlanProfileResponse)
+async def create_vlan_profile(
+    request: VlanProfileRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a VLAN profile on an OLT device.
+    
+    VLAN profiles define how VLAN tagging is handled for ONUs:
+    
+    - **tag**: Add VLAN tag to untagged traffic
+    - **untag**: Remove VLAN tag from tagged traffic
+    - **translate**: Change VLAN tag (CVLAN to SVLAN)
+    
+    **Example ZTE Command Generated:**
+    ```
+    configure terminal
+    gpon
+    onu profile vlan vlan100 tag-mode tag cvlan 100
+    ```
+    
+    **Common Use Cases:**
+    - Residential broadband: tag mode with customer VLAN
+    - Enterprise services: translate mode with CVLAN→SVLAN mapping
+    - L2 bridging: untag mode for transparent service
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == request.device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {request.device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Create VLAN profile
+            profile_config = {
+                'profile_name': request.profile_name,
+                'tag_mode': request.tag_mode,
+                'cvlan': request.cvlan
+            }
+            
+            result = await adapter.create_vlan_profile(profile_config)
+            
+            logger.info(f"VLAN profile creation result for device {device.name}: {result['status']}")
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            
+            return VlanProfileResponse(**result)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating VLAN profile for device {request.device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create VLAN profile: {str(e)}"
+        )
+
+
+@router.get("/profiles/tcont/{device_id}", response_model=ProfileListResponse)
+async def get_tcont_profiles(
+    device_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all T-CONT profiles configured on an OLT device.
+    
+    Returns a standardized list of T-CONT profiles with their bandwidth settings.
+    Useful for viewing available profiles before provisioning ONUs.
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Get T-CONT profiles
+            raw_profiles = await adapter.get_tcont_profiles()
+            
+            # Normalize profiles
+            normalized_profiles = normalize_profile_list(
+                device.manufacturer,
+                'tcont',
+                raw_profiles
+            )
+            
+            logger.info(f"Retrieved {len(normalized_profiles)} T-CONT profiles from device {device.name}")
+            
+            return ProfileListResponse(
+                device_id=device_id,
+                device_name=device.name,
+                manufacturer=device.manufacturer,
+                profile_type='tcont',
+                total_profiles=len(normalized_profiles),
+                profiles=normalized_profiles
+            )
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting T-CONT profiles for device {device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get T-CONT profiles: {str(e)}"
+        )
+
+
+@router.get("/profiles/vlan/{device_id}", response_model=ProfileListResponse)
+async def get_vlan_profiles(
+    device_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all VLAN profiles configured on an OLT device.
+    
+    Returns a standardized list of VLAN profiles with their tagging settings.
+    Useful for viewing available profiles before provisioning ONUs.
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Get VLAN profiles
+            raw_profiles = await adapter.get_vlan_profiles()
+            
+            # Normalize profiles
+            normalized_profiles = normalize_profile_list(
+                device.manufacturer,
+                'vlan',
+                raw_profiles
+            )
+            
+            logger.info(f"Retrieved {len(normalized_profiles)} VLAN profiles from device {device.name}")
+            
+            return ProfileListResponse(
+                device_id=device_id,
+                device_name=device.name,
+                manufacturer=device.manufacturer,
+                profile_type='vlan',
+                total_profiles=len(normalized_profiles),
+                profiles=normalized_profiles
+            )
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting VLAN profiles for device {device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get VLAN profiles: {str(e)}"
+        )
+
+
+@router.delete("/profiles/tcont/{device_id}/{profile_name}", response_model=ProfileDeleteResponse)
+async def delete_tcont_profile(
+    device_id: int,
+    profile_name: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a T-CONT profile from an OLT device.
+    
+    Removes a T-CONT bandwidth profile configuration. This profile must not be
+    currently in use by any provisioned ONUs.
+    
+    **Example ZTE Command Generated:**
+    ```
+    configure terminal
+    gpon
+    no profile tcont sampleprofile
+    ```
+    
+    **Warning:** Deleting a profile that is in use by ONUs may cause service disruption.
+    Verify the profile is not in use before deletion.
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Delete T-CONT profile
+            result = await adapter.delete_tcont_profile(profile_name)
+            
+            logger.info(f"T-CONT profile deletion result for device {device.name}: {result['status']}")
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            
+            return ProfileDeleteResponse(**result)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting T-CONT profile for device {device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete T-CONT profile: {str(e)}"
+        )
+
+
+@router.delete("/profiles/vlan/{device_id}/{profile_name}", response_model=ProfileDeleteResponse)
+async def delete_vlan_profile(
+    device_id: int,
+    profile_name: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a VLAN profile from an OLT device.
+    
+    Removes a VLAN profile configuration. This profile must not be currently
+    in use by any provisioned ONUs.
+    
+    **Example ZTE Command Generated:**
+    ```
+    configure terminal
+    gpon
+    no onu profile vlan vlan200
+    ```
+    
+    **Warning:** Deleting a profile that is in use by ONUs may cause service disruption.
+    Verify the profile is not in use before deletion.
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Device with ID {device_id} not found"
+            )
+        
+        # Verify it's an OLT device
+        if device.device_type != 'olt':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device {device.name} is not an OLT device (type: {device.device_type})"
+            )
+        
+        # Get adapter
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
+            # Delete VLAN profile
+            result = await adapter.delete_vlan_profile(profile_name)
+            
+            logger.info(f"VLAN profile deletion result for device {device.name}: {result['status']}")
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            
+            return ProfileDeleteResponse(**result)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting VLAN profile for device {device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete VLAN profile: {str(e)}"
+        )
+
+
+@router.get("/ports/{device_id}/{port}", response_model=PortInfoResponse)
+async def get_port_info(
+    device_id: int,
+    port: int,
+    board: int = 1,
+    card: int = 1,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get detailed information about an OLT PON port.
+    
+    This endpoint retrieves comprehensive information about a specific GPON port,
+    including status, ONU capacity, registration status, and detailed statistics.
+    
+    Args:
+        device_id: Database ID of the OLT device
+        port: Port number to query
+        board: Board number (default: 1)
+        card: Card number (default: 1)
+        db: Database session
+        
+    Returns:
+        PortInfoResponse: Port information with status, ONUs, and statistics
+        
+    Raises:
+        HTTPException: 404 if device not found, 400 if not an OLT, 503 if connection fails
+        
+    Example:
+        ```
+        GET /api/v1/olt/ports/9/2?board=1&card=1
+        
+        Response:
+        {
+            "board": 1,
+            "card": 1,
+            "port": 2,
+            "interface": "gpon-olt_1/1/2",
+            "status": "activate",
+            "line_protocol": "up",
+            "description": "none",
+            "total_onus": 128,
+            "registered_onus": 0,
+            "channel_num": 1,
+            "statistics": {
+                "input_rate_bps": 223,
+                "input_rate_pps": 3,
+                "output_rate_bps": 0,
+                "output_rate_pps": 0,
+                "input_bandwidth_percent": 0.0,
+                "output_bandwidth_percent": 0.0,
+                "input_packets": 6605,
+                "input_bytes": 317040,
+                "input_drops": 32,
+                "output_packets": 0,
+                "output_bytes": 0,
+                "input_unicast": 6605,
+                "input_multicast": 0,
+                "input_broadcast": 0,
+                "crc_errors": 32
+            }
+        }
+        ```
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            logger.error(f"Device with ID {device_id} not found")
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        # Verify device is an OLT
+        if device.device_type.lower() != 'olt':
+            logger.error(f"Device {device_id} is not an OLT")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device is not an OLT (type: {device.device_type})"
+            )
+        
+        logger.info(f"Getting port information for device {device.name} (ID: {device_id}), port {port}")
+        
+        # Create device adapter using factory
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            await adapter.connect()
+            
+            # Build port configuration
+            port_config = {
+                'board': board,
+                'card': card,
+                'port': port
+            }
+            
+            # Get port information
+            port_info = await adapter.get_port_info(port_config)
+            
+            logger.info(f"Port information retrieved successfully for device {device.name}, port {port}")
+            
+            # Check if result contains error
+            if 'error' in port_info:
+                raise HTTPException(
+                    status_code=500,
+                    detail=port_info['error']
+                )
+            
+            return PortInfoResponse(**port_info)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting port info for device {device_id}, port {port}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get port information: {str(e)}"
+        )
+
+
+@router.post("/onu/register", response_model=ONURegistrationResponse)
+async def register_onu(
+    request: ONURegistrationRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Register and configure an ONU on an OLT port.
+    
+    This endpoint performs a complete ONU registration process:
+    1. Looks up the ONU in the unconfigured list using its serial number to find the port
+    2. Finds the next available ONU ID on the specified port
+    3. Registers the ONU with its serial number on the OLT interface
+    4. Configures ONU settings (name, description, T-CONT, GEM port, service port)
+    5. Configures pon-onu-mng settings (service, switchport, IP host, VLAN)
+    
+    Args:
+        request: ONURegistrationRequest with serial number and configuration parameters
+        db: Database session
+        
+    Returns:
+        ONURegistrationResponse: Registration result with ONU ID and interface
+        
+    Raises:
+        HTTPException: 404 if device/ONU not found, 400 if not an OLT, 500 if registration fails
+        
+    Example:
+        ```json
+        POST /api/v1/olt/onu/register
+        {
+            "device_id": 9,
+            "onu_serial_number": "MHAR08DF4BD9",
+            "onu_type": "ZTE-F622",
+            "name": "ONU-Customer-001",
+            "description": "Customer ABC - Fiber connection",
+            "tcont_profile": "10M",
+            "gemport": 1,
+            "tcont": 1,
+            "service_port": 1,
+            "vport": 1,
+            "user_vlan": 100,
+            "vlan": 100,
+            "switchport_bind": "switch_0/1",
+            "iphost": 1,
+            "dhcp_enable": true,
+            "ping_response": true,
+            "traceroute_response": true,
+            "vlan_port": "eth_0/1",
+            "mode": "tag"
+        }
+        
+        Response:
+        {
+            "status": "success",
+            "message": "ONU successfully registered and configured as gpon-onu_1/1/2:1",
+            "onu_id": 1,
+            "interface": "gpon-onu_1/1/2:1",
+            "serial_number": "MHAR08DF4BD9",
+            "command_outputs": {...}
+        }
+        ```
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == request.device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            logger.error(f"Device with ID {request.device_id} not found")
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        # Verify device is an OLT
+        if device.device_type.lower() != 'olt':
+            logger.error(f"Device {request.device_id} is not an OLT")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device is not an OLT (type: {device.device_type})"
+            )
+        
+        logger.info(f"Registering ONU {request.onu_serial_number} on device {device.name} (ID: {request.device_id})")
+        
+        # Create device adapter using factory
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            await adapter.connect()
+            
+            # Build registration data dictionary (board/card/port will be looked up from unconfigured list)
+            registration_data = {
+                'onu_serial_number': request.onu_serial_number,
+                'onu_type': request.onu_type,
+                'name': request.name,
+                'description': request.description,
+                'tcont_profile': request.tcont_profile,
+                'gemport': request.gemport,
+                'tcont': request.tcont,
+                'service_port': request.service_port,
+                'vport': request.vport,
+                'user_vlan': request.user_vlan,
+                'vlan': request.vlan,
+                'switchport_bind': request.switchport_bind,
+                'iphost': request.iphost,
+                'dhcp_enable': request.dhcp_enable,
+                'ping_response': request.ping_response,
+                'traceroute_response': request.traceroute_response,
+                'vlan_port': request.vlan_port,
+                'mode': request.mode
+            }
+            
+            # Register ONU
+            result = await adapter.register_onu(registration_data)
+            
+            logger.info(f"ONU registration result for device {device.name}: {result['status']}")
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            
+            return ONURegistrationResponse(**result)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error registering ONU for device {request.device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to register ONU: {str(e)}"
+        )
+
+
+@router.delete("/onu/offline", response_model=UnregisterOfflineONUResponse)
+async def unregister_offline_onus(
+    request: UnregisterOfflineONURequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Unregister ONUs matching a specific state from an OLT port.
+    
+    This endpoint performs:
+    1. Checks the specified port for ONUs with the given state
+    2. Identifies all ONU IDs that match the state (e.g., 'offline', 'LOS', 'DyingGasp')
+    3. Unregisters each matching ONU using 'no onu X' command
+    
+    This is useful for cleaning up ports with failed/disconnected ONUs
+    that need to be removed from the configuration.
+    
+    Args:
+        request: UnregisterOfflineONURequest with device_id, port location, and state filter
+        db: Database session
+        
+    Returns:
+        UnregisterOfflineONUResponse: Result with count of unregistered ONUs
+        
+    Raises:
+        HTTPException: 404 if device not found, 400 if not an OLT, 500 if unregister fails
+        
+    Example:
+        ```json
+        DELETE /api/v1/olt/onu/offline
+        {
+            "device_id": 9,
+            "board": 1,
+            "card": 1,
+            "port": 1,
+            "state": "offline"
+        }
+        
+        Response:
+        {
+            "status": "success",
+            "message": "Successfully unregistered 3 ONU(s) with state 'offline' from gpon-olt_1/1/1",
+            "interface": "gpon-olt_1/1/1",
+            "offline_onus_found": 3,
+            "onus_unregistered": [1, 2, 3],
+            "command_outputs": {...}
+        }
+        ```
+    """
+    try:
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == request.device_id)
+        )
+        device = result.scalar_one_or_none()
+        
+        if not device:
+            logger.error(f"Device with ID {request.device_id} not found")
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        # Verify device is an OLT
+        if device.device_type.lower() != 'olt':
+            logger.error(f"Device {request.device_id} is not an OLT")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device is not an OLT (type: {device.device_type})"
+            )
+        
+        logger.info(f"Unregistering ONUs with state '{request.state}' on device {device.name} (ID: {request.device_id}), port {request.board}/{request.card}/{request.port}")
+        
+        # Create device adapter using factory
+        adapter = DeviceFactory.get_adapter(device)
+        
+        try:
+            # Connect to device
+            await adapter.connect()
+            
+            # Build port configuration
+            port_config = {
+                'board': request.board,
+                'card': request.card,
+                'port': request.port,
+                'state': request.state
+            }
+            
+            # Unregister offline ONUs
+            result = await adapter.unregister_offline_onus(port_config)
+            
+            logger.info(f"Offline ONU unregister result for device {device.name}: {result['status']}")
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            
+            return UnregisterOfflineONUResponse(**result)
+            
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unregistering offline ONUs for device {request.device_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to unregister offline ONUs: {str(e)}"
+        )
+
+
+@router.post("/check-unconfigured-onus")
+async def check_unconfigured_onus(
+    device_id: int,
+    olt_ip: str = "10.42.3.24",
+    snmp_community: str = "devCommunity",
+    publish_to_queue: bool = True
+):
+    """
+    Check for unconfigured ONUs via SNMP and optionally publish to Kafka
+    
+    This endpoint:
+    1. Performs SNMP walk on the OLT to discover unconfigured ONUs
+    2. Decodes serial numbers, OLT ports, and model information
+    3. Publishes each ONU to Kafka topic 'olt_ont_registration' for auto-provisioning
+    
+    Args:
+        device_id: Device ID from database
+        olt_ip: OLT IP address (default: 10.42.3.24)
+        snmp_community: SNMP community string (default: devCommunity)
+        publish_to_queue: Whether to publish ONUs to Kafka (default: True)
+    
+    Returns:
+        Dictionary with unconfigured ONUs list and Kafka publish status
+    """
+    try:
+        logger.info(f"Checking unconfigured ONUs on OLT {olt_ip}")
+        
+        # Create SNMP checker instance
+        checker = SNMPONUChecker(target_ip=olt_ip, community=snmp_community)
+        
+        # Get unconfigured ONUs
+        unconfigured_onus = checker.get_unconfigured_onus()
+        
+        if not unconfigured_onus:
+            logger.info("No unconfigured ONUs found")
+            return {
+                "success": True,
+                "device_id": device_id,
+                "olt_ip": olt_ip,
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "unconfigured_count": 0,
+                "unconfigured_onus": [],
+                "published_count": 0,
+                "kafka_published": False
+            }
+        
+        logger.info(f"Found {len(unconfigured_onus)} unconfigured ONUs")
+        
+        # Publish to Kafka if requested
+        published_count = 0
+        kafka_errors = []
+        
+        if publish_to_queue:
+            kafka_topic = "olt_ont_registration"
+            
+            for onu in unconfigured_onus:
+                # Prepare Kafka message (same format as snmp-to-kafka-app)
+                kafka_message = {
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "source_ip": olt_ip,
+                    "event_type": "ont_registration",
+                    "ont_data": {
+                        "event_type": "ont_registration",
+                        "ont_model": onu.get('ont_model'),
+                        "ont_serial": onu.get('ont_serial'),
+                        "ont_firmware": onu.get('ont_firmware'),
+                        "ont_index": onu.get('ont_index'),
+                        "olt_port": onu.get('olt_port'),
+                        "vendor_id": onu.get('vendor_id'),
+                        "device_serial": onu.get('device_serial'),
+                        "registration_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                        "source": "api_check_uncfg"
+                    },
+                    "trap_oid": "api.manual.check"
+                }
+                
+                # Publish to Kafka
+                success = publish_to_kafka(kafka_topic, kafka_message)
+                
+                if success:
+                    published_count += 1
+                    logger.info(f"✅ Published ONU {onu['ont_serial']} to Kafka")
+                else:
+                    error_msg = f"Failed to publish ONU {onu['ont_serial']}"
+                    kafka_errors.append(error_msg)
+                    logger.error(f"❌ {error_msg}")
+        
+        # Prepare response
+        response = {
+            "success": True,
+            "device_id": device_id,
+            "olt_ip": olt_ip,
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "unconfigured_count": len(unconfigured_onus),
+            "unconfigured_onus": unconfigured_onus,
+            "published_count": published_count,
+            "kafka_published": published_count > 0,
+            "kafka_topic": "olt_ont_registration" if publish_to_queue else None
+        }
+        
+        if kafka_errors:
+            response["kafka_errors"] = kafka_errors
+        
+        logger.info(
+            f"Check complete: {len(unconfigured_onus)} found, "
+            f"{published_count} published to Kafka"
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error checking unconfigured ONUs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check unconfigured ONUs: {str(e)}"
+        )
