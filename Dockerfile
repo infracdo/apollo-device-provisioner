@@ -29,7 +29,7 @@ RUN ls -la /app/alembic/ && cat /app/alembic.ini | head -n 5
 
 # Copy application code
 COPY ./app /app/app
-COPY ./ansible /app/ansible
+#COPY ./ansible /app/ansible
 
 # Create logs directory
 RUN mkdir -p /app/logs
