@@ -29,8 +29,8 @@ pyasn1==0.4.8
 librouteros==3.2.1
 
 # Ansible
-ansible-runner==2.3.4
-ansible-core==2.13.13
+#ansible-runner==2.3.4
+#ansible-core==2.13.13
 
 # Authentication
 python-jose[cryptography]==3.3.0
