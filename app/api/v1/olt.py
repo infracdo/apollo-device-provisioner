@@ -1020,6 +1020,8 @@ async def register_onu(
         ```json
         POST /api/v1/olt/onu/register
         {
+            "pppoe_user": "AIS00028",
+            "pppoe_pass": "AIS00028",
             "device_id": 9,
             "onu_serial_number": "MHAR08DF4BD9",
             "onu_type": "ZTE-F622",
@@ -1082,6 +1084,8 @@ async def register_onu(
             
             # Build registration data dictionary (board/card/port will be looked up from unconfigured list)
             registration_data = {
+                'pppoe_user': request.pppoe_user,
+                'pppoe_pass': request.pppoe_pass,
                 'onu_serial_number': request.onu_serial_number,
                 'onu_type': request.onu_type,
                 'name': request.name,

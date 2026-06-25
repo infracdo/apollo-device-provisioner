@@ -1391,6 +1391,8 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         
         Args:
             registration_data: Dict containing:
+                - pppoe_user: Username of the PPPoe User
+                - pppoe_pass: key of the PPPoe User
                 - onu_serial_number: Serial number of the ONU (will be looked up in unconfigured list)
                 - onu_type: ONU type (default: ZTE-F622)
                 - name: ONU name
@@ -1503,6 +1505,8 @@ class ZTEOLTAdapter(BaseOLTAdapter):
             traceroute_response = "enable" if registration_data.get('traceroute_response', True) else "disable"
             vlan_port = registration_data.get('vlan_port', 'eth_0/1')
             mode = registration_data.get('mode', 'tag')
+            user = registration_data.get('pppoe_user', 'AP0LL0')
+            userkey = registration_data.get('pppoe_pass', 'AP0LL02K26')
             
             commands = [
                 "configure terminal",
@@ -1516,6 +1520,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                 "switchport-bind switch_0/2 iphost 2",
                 "ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable",
                 "vlan port eth_0/2 mode tag vlan 200",
+                f"wan-ip 2 mode pppoe username {user} password {userkey} vlan-profile vlan100 host 1",
                 "exit",
                 "exit"
             ]
