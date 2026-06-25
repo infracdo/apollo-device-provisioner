@@ -30,6 +30,11 @@ jobs:
 
           docker build -t hive-ais-apollo-device-provisioner:test .
 
+      - name: Clean Up Docker Garbage
+        run: |
+          sudo docker system prune -f
+          sudo docker builder prune -f
+
       # Step 4: Push the Docker image
       - name: Push Docker Image
         run: |

@@ -290,6 +290,8 @@ class PortInfoResponse(BaseModel):
 
 class ONURegistrationRequest(BaseModel):
     """Request model for ONU registration"""
+    pppoe_user: str = Field(..., description="PPPoe user")
+    pppoe_pass: str = Field(..., description="PPPoe key")
     device_id: int = Field(..., description="OLT device ID")
     onu_serial_number: str = Field(..., description="ONU serial number (e.g., MHAR08DF4BD9)")
     onu_type: str = Field("ZTE-F622", description="ONU type/model")
@@ -313,6 +315,8 @@ class ONURegistrationRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "pppoe_user": "AIS00028",
+                "pppoe_pass": "AIS00028",
                 "device_id": 9,
                 "onu_serial_number": "MHAR08DF4BD9",
                 "onu_type": "ZTE-F622",
