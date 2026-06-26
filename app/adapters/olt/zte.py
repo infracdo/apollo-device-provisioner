@@ -19,6 +19,7 @@ from app.adapters.olt.base_olt import BaseOLTAdapter
 from app.connectors.ssh_connector import SSHConnector
 from app.connectors.telnet_connector import TelnetConnector
 from app.utils.logging import logger
+from app.config import settings
 
 
 class ZTEOLTAdapter(BaseOLTAdapter):
@@ -1521,6 +1522,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                 "ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable",
                 "vlan port eth_0/2 mode tag vlan 200",
                 f"wan-ip 2 mode pppoe username {user} password {userkey} vlan-profile vlan100 host 1",
+                f"tr069-mgmt 1 state unlock acs {settings.ACS_URL} validate basic username onu password onu tag pri 2 vlan 200",
                 "exit",
                 "exit"
             ]
