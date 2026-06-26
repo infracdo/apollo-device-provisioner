@@ -3,7 +3,7 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - apd-sbx # Trigger on pushes to the main branch
+      - apd-prod # Trigger on pushes to the main branch
 
 jobs:
   build-and-push:
@@ -27,7 +27,7 @@ jobs:
         run: 
           # docker build --target build -t my-image:build .
 
-          docker build -t hive-ais-apollo-device-provisioner:sbx .
+          docker build -t hive-ais-apollo-device-provisioner:prod .
 
       - name: Clean Up Docker Garbage
         run: |
@@ -37,5 +37,5 @@ jobs:
       # Step 4: Push the Docker image
       - name: Push Docker Image
         run: |
-          docker tag hive-ais-apollo-device-provisioner:sbx infracdo/hive-ais-apollo-device-provisioner:sbx
-          docker push infracdo/hive-ais-apollo-device-provisioner:sbx
+          docker tag hive-ais-apollo-device-provisioner:prod infracdo/hive-ais-apollo-device-provisioner:prod
+          docker push infracdo/hive-ais-apollo-device-provisioner:prod
