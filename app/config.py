@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     RADIUS_COA_PORT: int = 3799
     RADIUS_SECRET: str = "ap0ll0"
     RADIUS_COA_ENABLED: bool = True
+
+    # ACS 
+    ACS_URL: str = "http://202.60.12.77:7547"
     
     class Config:
         env_file = ".env"
