@@ -1524,7 +1524,8 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                 f"wan-ip 2 mode pppoe username {user} password {userkey} vlan-profile vlan100 host 1",
                 f"tr069-mgmt 1 state unlock acs {settings.ACS_URL} validate basic username onu password onu tag pri 2 vlan 200",
                 "exit",
-                "exit"
+                "exit",
+                "write",
             ]
             
             step3_output = ""
