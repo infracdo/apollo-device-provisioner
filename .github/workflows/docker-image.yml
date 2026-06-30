@@ -27,7 +27,7 @@ jobs:
         run: 
           # docker build --target build -t my-image:build .
 
-          docker build -t hive-ais-apollo-device-provisioner:test .
+          docker build -t hive-ais-apollo-device-provisioner:test.01 .
 
       - name: Clean Up Docker Garbage
         run: |
@@ -37,5 +37,5 @@ jobs:
       # Step 4: Push the Docker image
       - name: Push Docker Image
         run: |
-          docker tag hive-ais-apollo-device-provisioner:test infracdo/hive-ais-apollo-device-provisioner:test
-          docker push infracdo/hive-ais-apollo-device-provisioner:test
+          docker tag hive-ais-apollo-device-provisioner:test.01 infracdo/hive-ais-apollo-device-provisioner:test.01 
+          docker push infracdo/hive-ais-apollo-device-provisioner:test.01
