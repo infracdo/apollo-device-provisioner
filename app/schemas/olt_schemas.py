@@ -396,7 +396,7 @@ class OltDeviceResponse(BaseModel):
     verify_ssl: bool = Field(..., description="OLT verify ssl")
     timeout: int = Field(..., description="OLT timeout")
     description: str = Field(..., description="OLT description")
-    location: str = Field(..., description="OLT locationx")
+    location: str = Field(..., description="OLT location")
 
 
 class OltDeviceListResponse(BaseModel):
