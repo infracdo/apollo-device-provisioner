@@ -384,3 +384,45 @@ class UnregisterOfflineONUResponse(BaseModel):
     command_outputs: Optional[Dict[str, Any]] = Field(None, description="Command outputs for debugging")
 
 
+class OltDeviceResponse(BaseModel):
+    """Standardized response for OLT list endpoint"""
+    id: int = Field(..., description="OLT device ID")
+    name: str = Field(..., description="OLT device name")
+    manufacturer: str = Field(..., description="OLT manufacturer")
+    host: str = Field(..., description="OLT host ip")
+    port: int = Field(..., description="OLT port")
+    protocol: str = Field(..., description="OLT protocol")
+    is_active: bool = Field(..., description="OLT status")
+    verify_ssl: bool = Field(..., description="OLT verify ssl")
+    timeout: int = Field(..., description="OLT timeout")
+    description: str = Field(..., description="OLT description")
+    location: str = Field(..., description="OLT locationx")
+
+
+class OltDeviceListResponse(BaseModel):
+    """Schema for list of OLT devices"""
+    total: int = Field(..., description="Total number of OLT devices")
+    devices: List[OltDeviceResponse] = Field(..., description="List of OLT devices")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total": 2,
+                "users": [
+                    {
+                        "id": 1,
+                        "name": "AM1 2F LAB",
+                        "manufacturer": "zte",
+                        "host": "10.50.0.3",
+                        "port": "23",
+                        "protocol": "telnet",
+                        "is_active": True,
+                        "verify_ssl": True,
+                        "timeout": 30,
+                        "description": "SBX/TEST",
+                        "location": "AM1 2F LAB"
+                    }
+                ]
+            }
+        }
+
