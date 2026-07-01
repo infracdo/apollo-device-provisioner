@@ -71,6 +71,7 @@ class Settings(BaseSettings):
 
     # ACS 
     ACS_URL: str = "http://202.60.12.77:7547"
+    ACS_SERVICE_NAME: str = "service1"
     
     class Config:
         env_file = ".env"

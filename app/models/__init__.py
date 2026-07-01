@@ -239,15 +239,19 @@ class IPPool(Base):
     __tablename__ = "ip_pool"
 
     id = Column(Integer, primary_key=True, index=True)
-    counter = Column(Integer, nullable=False) 
-    subnet = Column(String(100), nullable=False)
+    mikrotik_id = Column(Integer, nullable=False)
+    start_ip = Column(String(45), nullable=False)
+    subnet = Column(String(50), nullable=False)
+    counter = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     def to_dict(self):
         """Convert to dictionary"""
         return {
-            'id': self.id,
-            'counter': self.counter,
-            'subnet': self.subnet,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            "id": self.id,
+            "mikrotik_id": self.mikrotik_id,
+            "start_ip": self.start_ip,
+            "subnet": self.subnet,
+            "counter": self.counter,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
