@@ -112,22 +112,22 @@ async def disconnect_user(username: str):
 
 @router.get("/ip-pool/next", response_model=IPPoolResponse)
 async def get_ip_pool_next(
-    device_id: int,
+    mikrotik_id: int,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Preview current and next IP (no counter increment).
     """
     try:
-        result = await db.execute(
-            select(IPPool).where(IPPool.id == 1) # there's only one IP pool for now
+        result = await db.execute( 
+            select(IPPool).where(IPPool.mikrotik_id == mikrotik_id) # there's only one IP pool for now
         )
         ip_pool = result.scalar_one_or_none() # returned row is [id, mikrotik_id, counter, subnet, updated_at]
         
         if not ip_pool:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"IP pool with ID 1 not found" # update this to use mikrotik_id if needed
+                detail=f"IP pool with mikrotik_id {mikrotik_id} not found"
             )
         current_counter = ip_pool.counter
         next_counter = current_counter + 1
@@ -158,16 +158,16 @@ async def get_ip_pool_next(
 
 @router.put("/ip-pool/next", response_model=IPPoolResponse)
 async def update_ip_pool_next(
-    device_id: int,
+    mikrotik_id: int,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Increment the current counter for IP pool and return the current and next IP.
     """
     try:
-        result = await db.execute(
+        result = await db.execute( 
             select(IPPool)
-            .where(IPPool.id == 1)
+            .where(IPPool.mikrotik_id == mikrotik_id)
             .with_for_update()
         )
         ip_pool = result.scalar_one_or_none()
@@ -175,7 +175,7 @@ async def update_ip_pool_next(
         if not ip_pool:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"IP pool with ID 1 not found"
+                detail=f"IP pool with mikrotik_id {mikrotik_id} not found"
             )
         current_counter = ip_pool.counter
         current_ip = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, current_counter)
