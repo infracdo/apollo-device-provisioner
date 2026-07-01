@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models import IPPool
 from app.schemas.mikrotik_schemas import (
     IPPoolResponse,
+    IPPoolCreate,
     QueueCreateRequest,
     QueueUpdateRequest,
     QueueResponse,
@@ -212,3 +213,22 @@ async def update_ip_pool(
             detail=f"Failed to update IP pool: {str(e)}"
         )
 
+
+@router.post("/ip-pool", response_model=IPPoolResponse)
+async def create_ip_pool(
+    payload: IPPoolCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    new_pool = IPPool(
+        mikrotik_id=payload.mikrotik_id,
+        start_ip=payload.start_ip,
+        subnet=payload.subnet,
+        counter=payload.counter,
+    )
+
+    db.add(new_pool)
+    await db.commit()
+    await db.refresh(new_pool)
+
+    return new_pool.to_dict()
+ 

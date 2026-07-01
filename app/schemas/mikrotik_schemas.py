@@ -67,3 +67,10 @@ class IPPoolResponse(BaseModel):
     updated_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
+
+
+class IPPoolCreate(BaseModel):
+    mikrotik_id: int
+    start_ip: str
+    subnet: str
+    counter: int = 0
