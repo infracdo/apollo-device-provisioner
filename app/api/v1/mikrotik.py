@@ -3,7 +3,7 @@ Mikrotik API Endpoints
 
 RESTful API endpoints for Mikrotik router operations.
 """
-from ipaddress import ip_address, IPv4Address, IPv4Network
+from ipaddress import IPv4Address, IPv4Network
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -103,25 +103,6 @@ async def disconnect_user(username: str):
     except Exception as e:
         logger.error(f"Error disconnecting user: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def framed_ip(start_ip: str, subnet: str, counter: int) -> str:
-    net = IPv4Network(subnet, strict=False)
-    hosts = list(net.hosts())
-    start = IPv4Address(start_ip)
-    if start not in net:
-        raise ValueError("start_ip is not inside subnet")
-
-    try:
-        start_index = hosts.index(start)
-    except ValueError:
-        raise ValueError("start_ip is not a usable host address")
-
-    target_index = start_index + counter
-    if target_index >= len(hosts):
-        raise ValueError("IP pool exhausted")
-
-    return str(hosts[target_index])
 
 
 @router.get("/ip-pool/next", response_model=IPPoolResponse)
@@ -231,4 +212,51 @@ async def create_ip_pool(
     await db.refresh(new_pool)
 
     return new_pool.to_dict()
+
+
+@router.get("/{pool_id}/netmask")
+async def get_subnet_mask(
+    pool_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(IPPool).where(IPPool.id == pool_id)
+    )
+    pool = result.scalar_one_or_none()
+
+    if not pool:
+        raise HTTPException(status_code=404, detail="IP Pool not found")
+
+    if not pool.subnet:
+        raise HTTPException(status_code=400, detail="Subnet not set")
+
+    netmask = cidr_to_netmask(pool.subnet)
+    return {
+        "pool_id": pool.id,
+        "subnet": pool.subnet,
+        "netmask": netmask
+    }
  
+
+def framed_ip(start_ip: str, subnet: str, counter: int) -> str:
+    net = IPv4Network(subnet, strict=False)
+    hosts = list(net.hosts())
+    start = IPv4Address(start_ip)
+    if start not in net:
+        raise ValueError("start_ip is not inside subnet")
+
+    try:
+        start_index = hosts.index(start)
+    except ValueError:
+        raise ValueError("start_ip is not a usable host address")
+
+    target_index = start_index + counter
+    if target_index >= len(hosts):
+        raise ValueError("IP pool exhausted")
+
+    return str(hosts[target_index])
+
+
+def cidr_to_netmask(cidr: str) -> str:
+    network = IPv4Network(cidr, strict=False)
+    return str(network.netmask)
