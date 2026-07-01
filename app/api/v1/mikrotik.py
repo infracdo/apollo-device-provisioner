@@ -3,6 +3,7 @@ Mikrotik API Endpoints
 
 RESTful API endpoints for Mikrotik router operations.
 """
+import asyncio
 from ipaddress import IPv4Address, IPv4Network
 
 from fastapi import APIRouter, HTTPException, Depends, status
@@ -22,6 +23,7 @@ from app.schemas.mikrotik_schemas import (
 )
 from app.utils.logging import logger
 
+lock = asyncio.Lock()
 router = APIRouter(prefix="/mikrotik")
 
 
@@ -105,14 +107,16 @@ async def disconnect_user(username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# TODO - create api for fetching all ip pools
+
+
 @router.get("/ip-pool/next", response_model=IPPoolResponse)
-async def get_ip_pool(
+async def get_ip_pool_next(
     device_id: int,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get IP pool details.
-    - automate framed ip address to auto increment
+    Preview current and next IP (no counter increment).
     """
     try:
         result = await db.execute(
@@ -125,15 +129,20 @@ async def get_ip_pool(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"IP pool with ID 1 not found" # update this to use mikrotik_id if needed
             )
+        current_counter = ip_pool.counter
+        next_counter = current_counter + 1
+        current_ip  = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, current_counter)
+        next_ip = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, next_counter)
         
-        next_ip = framed_ip(ip_pool.start_ip, ip_pool.subnet, ip_pool.counter)
         
         return {
             "id": ip_pool.id,
             "mikrotik_id": ip_pool.mikrotik_id,
             "subnet": ip_pool.subnet,
             "counter": ip_pool.counter,
+            "current_ip": current_ip,
             "next_ip": next_ip,
+            "subnet_mask": cidr_to_netmask(ip_pool.subnet),
             "updated_at": ip_pool.updated_at
         }
     
@@ -148,12 +157,12 @@ async def get_ip_pool(
 
 
 @router.put("/ip-pool/next", response_model=IPPoolResponse)
-async def update_ip_pool(
+async def update_ip_pool_next(
     device_id: int,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Increment the current counter for IP pool and return the next IP.
+    Increment the current counter for IP pool and return the current and next IP.
     """
     try:
         result = await db.execute(
@@ -168,9 +177,11 @@ async def update_ip_pool(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"IP pool with ID 1 not found"
             )
-        
-        ip_pool.counter += 1
-        next_ip = framed_ip(ip_pool.start_ip, ip_pool.subnet, ip_pool.counter)
+        current_counter = ip_pool.counter
+        current_ip = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, current_counter)
+        next_counter = current_counter + 1
+        next_ip = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, next_counter)
+        ip_pool.counter = next_counter
 
         await db.commit()
         await db.refresh(ip_pool)
@@ -182,7 +193,9 @@ async def update_ip_pool(
             "mikrotik_id": ip_pool.mikrotik_id,
             "subnet": ip_pool.subnet,
             "counter": ip_pool.counter,
+            "current_ip": current_ip,
             "next_ip": next_ip,
+            "subnet_mask": cidr_to_netmask(ip_pool.subnet),
             "updated_at": ip_pool.updated_at
         }
 
@@ -195,7 +208,8 @@ async def update_ip_pool(
         )
 
 
-@router.post("/ip-pool", response_model=IPPoolResponse)
+# create new entry in ip pool
+@router.post("/ip-pool", response_model=IPPoolResponse) 
 async def create_ip_pool(
     payload: IPPoolCreate,
     db: AsyncSession = Depends(get_db)
@@ -214,13 +228,13 @@ async def create_ip_pool(
     return new_pool.to_dict()
 
 
-@router.get("/{pool_id}/netmask")
+@router.get("/{id}/netmask")
 async def get_subnet_mask(
-    pool_id: int,
+    id: int,
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(IPPool).where(IPPool.id == pool_id)
+        select(IPPool).where(IPPool.id == id)
     )
     pool = result.scalar_one_or_none()
 
@@ -238,23 +252,22 @@ async def get_subnet_mask(
     }
  
 
-def framed_ip(start_ip: str, subnet: str, counter: int) -> str:
+def framed_ip_from_index(start_ip: str, subnet: str, index: int) -> str:
     net = IPv4Network(subnet, strict=False)
-    hosts = list(net.hosts())
     start = IPv4Address(start_ip)
+
     if start not in net:
         raise ValueError("start_ip is not inside subnet")
 
-    try:
-        start_index = hosts.index(start)
-    except ValueError:
-        raise ValueError("start_ip is not a usable host address")
+    start_int = int(start)
+    net_end = int(net.broadcast_address)
 
-    target_index = start_index + counter
-    if target_index >= len(hosts):
-        raise ValueError("IP pool exhausted")
+    target_int = start_int + index
 
-    return str(hosts[target_index])
+    if target_int > net_end:
+        raise HTTPException(status_code=409, detail="IP pool exhausted")
+
+    return str(IPv4Address(target_int))
 
 
 def cidr_to_netmask(cidr: str) -> str:

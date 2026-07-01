@@ -63,7 +63,9 @@ class IPPoolResponse(BaseModel):
     mikrotik_id: int
     subnet: str
     counter: int
+    current_ip: str
     next_ip: str
+    subnet_mask: str
     updated_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
