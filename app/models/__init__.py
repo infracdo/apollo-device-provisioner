@@ -233,3 +233,21 @@ class PPPoEUser(Base):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
+
+class IPPool(Base):
+    """IP Pool model"""
+    __tablename__ = "ip_pool"
+
+    id = Column(Integer, primary_key=True, index=True)
+    counter = Column(Integer, nullable=False) 
+    subnet = Column(String(100), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    def to_dict(self):
+        """Convert to dictionary"""
+        return {
+            'id': self.id,
+            'counter': self.counter,
+            'subnet': self.subnet,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
