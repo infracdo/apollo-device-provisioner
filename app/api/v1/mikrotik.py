@@ -107,7 +107,47 @@ async def disconnect_user(username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# TODO - create api for fetching all ip pools
+@router.get("/ip-pool", response_model=List[IPPoolResponse])
+async def get_all_ip_pools(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetch all IP pool entries.
+    """
+    try:
+        result = await db.execute(
+            select(IPPool).order_by(IPPool.id)
+        )
+        ip_pools = result.scalars().all()
+
+        return [
+            {
+                "id": pool.id,
+                "mikrotik_id": pool.mikrotik_id,
+                "subnet": pool.subnet,
+                "counter": pool.counter,
+                "current_ip": framed_ip_from_index(
+                    pool.start_ip,
+                    pool.subnet,
+                    pool.counter
+                ),
+                "next_ip": framed_ip_from_index(
+                    pool.start_ip,
+                    pool.subnet,
+                    pool.counter + 1
+                ),
+                "subnet_mask": cidr_to_netmask(pool.subnet),
+                "updated_at": pool.updated_at,
+            }
+            for pool in ip_pools
+        ]
+
+    except Exception as e:
+        logger.error(f"Error fetching IP pools: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch IP pools: {str(e)}"
+        )
 
 
 @router.get("/ip-pool/next", response_model=IPPoolResponse)
