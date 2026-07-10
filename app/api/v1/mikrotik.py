@@ -4,7 +4,7 @@ Mikrotik API Endpoints
 RESTful API endpoints for Mikrotik router operations.
 """
 import asyncio
-from ipaddress import IPv4Address, IPv4Network
+from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -124,7 +124,7 @@ async def get_all_ip_pools(
             {
                 "id": pool.id,
                 "mikrotik_id": pool.mikrotik_id,
-                "subnet": pool.subnet,
+                "subnet": str(pool.subnet),
                 "counter": pool.counter,
                 "current_ip": framed_ip_from_index(
                     pool.start_ip,
@@ -178,12 +178,12 @@ async def get_ip_pool_next(
         return {
             "id": ip_pool.id,
             "mikrotik_id": ip_pool.mikrotik_id,
-            "subnet": ip_pool.subnet,
+            "subnet": str(ip_pool.subnet),
             "counter": ip_pool.counter,
             "current_ip": current_ip,
             "next_ip": next_ip,
             "subnet_mask": cidr_to_netmask(ip_pool.subnet),
-            "updated_at": ip_pool.updated_at
+            "updated_at": ip_pool.updated_at.isoformat() if ip_pool.updated_at else None
         }
     
     except HTTPException:
@@ -231,7 +231,7 @@ async def update_ip_pool_next(
         return {
             "id": ip_pool.id,
             "mikrotik_id": ip_pool.mikrotik_id,
-            "subnet": ip_pool.subnet,
+            "subnet": str(ip_pool.subnet),
             "counter": ip_pool.counter,
             "current_ip": current_ip,
             "next_ip": next_ip,
@@ -257,7 +257,7 @@ async def create_ip_pool(
     new_pool = IPPool(
         mikrotik_id=payload.mikrotik_id,
         start_ip=payload.start_ip,
-        subnet=payload.subnet,
+        subnet=ip_network(payload.subnet, strict=False),
         counter=payload.counter,
     )
 
@@ -265,7 +265,19 @@ async def create_ip_pool(
     await db.commit()
     await db.refresh(new_pool)
 
-    return new_pool.to_dict()
+    current_ip = framed_ip_from_index(new_pool.start_ip, new_pool.subnet, new_pool.counter)
+    next_ip = framed_ip_from_index(new_pool.start_ip, new_pool.subnet, new_pool.counter + 1)
+
+    return {
+        "id": new_pool.id,
+        "mikrotik_id": new_pool.mikrotik_id,
+        "subnet": str(new_pool.subnet),
+        "counter": new_pool.counter,
+        "current_ip": current_ip,
+        "next_ip": next_ip,
+        "subnet_mask": cidr_to_netmask(new_pool.subnet),
+        "updated_at": new_pool.updated_at,
+    }
 
 
 @router.get("/{id}/netmask")
@@ -287,7 +299,7 @@ async def get_subnet_mask(
     netmask = cidr_to_netmask(pool.subnet)
     return {
         "pool_id": pool.id,
-        "subnet": pool.subnet,
+        "subnet": str(pool.subnet),
         "netmask": netmask
     }
  
