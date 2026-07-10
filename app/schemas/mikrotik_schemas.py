@@ -3,6 +3,7 @@ Mikrotik Pydantic Schemas
 
 Request and response models for Mikrotik API endpoints.
 """
+from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
@@ -55,3 +56,23 @@ class HotspotUserResponse(BaseModel):
     status: Literal['success', 'error']
     user_id: Optional[str] = None
     message: str
+
+
+class IPPoolResponse(BaseModel):
+    id: int
+    mikrotik_id: int
+    subnet: str
+    counter: int
+    current_ip: str
+    next_ip: str
+    subnet_mask: str
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class IPPoolCreate(BaseModel):
+    mikrotik_id: int
+    start_ip: str
+    subnet: str
+    counter: int = 0

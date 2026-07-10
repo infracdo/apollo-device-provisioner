@@ -3,16 +3,18 @@ OLT API Endpoints
 
 RESTful API endpoints for OLT device operations.
 """
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import List, Dict, Any
+from sqlalchemy import select, func
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.schemas.olt_schemas import (
     ONUProvisionRequest,
     ONUProvisionResponse,
     ONURemoveRequest,
     ONUStatusResponse,
+    OltDeviceResponse,
+    OltDeviceListResponse,
     VLANResponse,
     BoardResponse,
     ONTListResponse,
@@ -1362,3 +1364,86 @@ async def check_unconfigured_onus(
             status_code=500,
             detail=f"Failed to check unconfigured ONUs: {str(e)}"
         )
+
+
+@router.get("/devices", response_model=OltDeviceListResponse)
+async def list_olt_devices(
+    name: Optional[str] = Query(None, description="Filter by name (partial match)"),
+    manufacturer: Optional[str] = Query(None, description="Filter by Manufacturer"),
+    host: Optional[str] = Query(None, description="Filter by IP address"),
+    port: Optional[int] = Query(None, description="Filter by port"),
+    protocol: Optional[str] = Query(None, description="Filter by protocol"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    verify_ssl: Optional[bool] = Query(None, description="Filter by ssl status"),
+    description: Optional[str] = Query(None, description="Filter by description (partial match)"),
+    location: Optional[str] = Query(None, description="Filter by location (partial match)"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List OLT devices with optional filters.
+    
+    **Search filters:**
+    - **name**: Partial match (case-insensitive)
+    - **manufacturer**: Exact match
+    - **host**: Exact match
+    - **port**: Exact match
+    - **protocol**: Exact match
+    - **is_active**: Filter by active/inactive status
+    - **verify_ssl**: Filter by ssl status
+    - **description**: Partial match (case-insensitive)
+    - **location**: Exact match
+    
+    **Pagination:**
+    - **limit**: Maximum results per page (1-1000, default 100)
+    - **offset**: Number of results to skip
+    """
+    try:
+        # Build query with filters
+        query = select(Device)
+        query = query.where(Device.device_type == "olt") # get olt devices
+        
+        if name:
+            query = query.where(Device.name.ilike(f"%{name}%"))
+        
+        if manufacturer:
+            query = query.where(Device.manufacturer == manufacturer)
+        
+        if host:
+            query = query.where(Device.host == host)
+        
+        if port:
+            query = query.where(Device.port == port)
+        
+        if protocol:
+            query = query.where(Device.protocol == protocol)
+        
+        if is_active is not None:
+            query = query.where(Device.is_active == is_active)
+        
+        if verify_ssl is not None:
+            query = query.where(Device.verify_ssl == verify_ssl)
+        
+        if description:
+            query = query.where(Device.description.ilike(f"%{description}%"))
+        
+        if location:
+            query = query.where(Device.location.ilike(f"%{location}%"))
+        
+        # Get total count
+        count_query = select(func.count()).select_from(query.subquery())
+        total_result = await db.execute(count_query)
+        total = total_result.scalar()
+        
+        # Get paginated results
+        query = query.limit(limit).offset(offset).order_by(Device.id)
+        result = await db.execute(query)
+        devices = result.scalars().all()
+        
+        logger.info(f"Listed {len(devices)} OLT devices (total: {total})")
+        return OltDeviceListResponse(total=total, devices=devices)
+        
+    except Exception as e:
+        logger.error(f"Error listing PPPoE users: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list users: {str(e)}")
