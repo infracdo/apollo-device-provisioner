@@ -159,22 +159,26 @@ async def get_ip_pool_next(
     Preview current and next IP (no counter increment).
     """
     try:
+        logger.info(f"Fetching IP pool for mikrotik_id: {mikrotik_id}")
         result = await db.execute( 
             select(IPPool).where(IPPool.mikrotik_id == mikrotik_id) # there's only one IP pool for now
         )
         ip_pool = result.scalar_one_or_none() # returned row is [id, mikrotik_id, counter, subnet, updated_at]
         
         if not ip_pool:
+            logger.warning(f"IP pool with mikrotik_id {mikrotik_id} not found")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"IP pool with mikrotik_id {mikrotik_id} not found"
             )
+        logger.info(f"Fetched IP pool: {ip_pool}")
+        
         current_counter = ip_pool.counter
         next_counter = current_counter + 1
         current_ip  = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, current_counter)
         next_ip = framed_ip_from_index(ip_pool.start_ip, ip_pool.subnet, next_counter)
         
-        
+        logger.info(f"Fetched IP pool: {ip_pool.id} (Counter: {ip_pool.counter}, Current IP: {current_ip}, Next IP: {next_ip})")
         return {
             "id": ip_pool.id,
             "mikrotik_id": ip_pool.mikrotik_id,
