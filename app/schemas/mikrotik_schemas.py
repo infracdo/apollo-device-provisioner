@@ -66,7 +66,7 @@ class IPPoolResponse(BaseModel):
     current_ip: str
     next_ip: str
     subnet_mask: str
-    updated_at: Optional[datetime]
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

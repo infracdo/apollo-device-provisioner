@@ -4,6 +4,7 @@ Database Models
 SQLAlchemy models for device provisioning system.
 """
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import INET, CIDR
 from sqlalchemy.sql import func
 from app.database import Base
 import enum
@@ -240,10 +241,10 @@ class IPPool(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     mikrotik_id = Column(Integer, nullable=False)
-    start_ip = Column(String(45), nullable=False)
-    subnet = Column(String(50), nullable=False)
+    start_ip = Column(INET, nullable=False)
+    subnet = Column(CIDR, nullable=False)
     counter = Column(Integer, nullable=False, default=0)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     def to_dict(self):
         """Convert to dictionary"""
