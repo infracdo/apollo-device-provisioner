@@ -3,8 +3,9 @@ Database Models
 
 SQLAlchemy models for device provisioning system.
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Enum as SQLEnum
+from sqlalchemy import Column, ForeignKey, Integer, String, Text, DateTime, Boolean, UniqueConstraint, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import INET, CIDR
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
 import enum
@@ -168,7 +169,6 @@ class Queue(Base):
 class PPPoEUser(Base):
     """PPPoE User model for RADIUS authentication"""
     __tablename__ = "pppoe_users"
-    
     id = Column(Integer, primary_key=True, index=True)
     
     # Core RADIUS attributes
@@ -238,6 +238,9 @@ class PPPoEUser(Base):
 class IPPool(Base):
     """IP Pool model"""
     __tablename__ = "ip_pool"
+    __table_args__ = (
+        UniqueConstraint('id', name='ip_pool_unique'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     mikrotik_id = Column(Integer, nullable=False)
@@ -256,3 +259,35 @@ class IPPool(Base):
             "counter": self.counter,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+    
+class Olt(Base):
+    __tablename__ = "olts"
+    __table_args__ = (
+        UniqueConstraint(
+            "olt_id",
+            "mikrotik_id",
+            name="uq_olt_mikrotik_mapping"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    olt_id = Column(
+        Integer,
+        ForeignKey("devices.id"),
+        nullable=False
+    )
+    mikrotik_id = Column(
+        Integer,
+        ForeignKey("devices.id"),
+        nullable=False
+    )
+    olt_device = relationship(
+        "Device",
+        foreign_keys=[olt_id]
+    )
+
+    mikrotik_device = relationship(
+        "Device",
+        foreign_keys=[mikrotik_id]
+    )
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

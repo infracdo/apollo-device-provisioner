@@ -3,7 +3,7 @@ PPPoE Accounting Models
 
 RADIUS accounting records for PPPoE sessions.
 """
-from sqlalchemy import Column, Integer, String, DateTime, BigInteger
+from sqlalchemy import Column, Integer, String, DateTime, BigInteger, UniqueConstraint
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -11,6 +11,13 @@ from app.database import Base
 class PPPoEAccountingRequest(Base):
     """PPPoE RADIUS Accounting Request Model"""
     __tablename__ = "pppoe_accounting_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "acct_session_id",
+            "acct_status_type",
+            name="uq_pppoe_accounting_session_status"
+        ),
+    )
     
     id = Column(Integer, primary_key=True, index=True)
     
