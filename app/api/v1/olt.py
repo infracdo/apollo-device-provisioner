@@ -3,7 +3,7 @@ OLT API Endpoints
 
 RESTful API endpoints for OLT device operations.
 """
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import List, Dict, Any, Optional
@@ -15,6 +15,8 @@ from app.schemas.olt_schemas import (
     ONUStatusResponse,
     OltDeviceResponse,
     OltDeviceListResponse,
+    OltMappingCreate,
+    OltResponse,
     VLANResponse,
     BoardResponse,
     ONTListResponse,
@@ -38,7 +40,7 @@ from app.utils.profile_mapper import normalize_profile_list
 from app.utils.snmp_onu_checker import SNMPONUChecker
 from app.utils.kafka import publish_to_kafka
 from app.database import get_db
-from app.models import Device
+from app.models import Device, Olt
 
 router = APIRouter(prefix="/olt")
 
@@ -1447,3 +1449,154 @@ async def list_olt_devices(
     except Exception as e:
         logger.error(f"Error listing PPPoE users: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to list users: {str(e)}")
+
+
+# TODO create api endpoints for olt table
+@router.get("/pppoe-mapping", response_model=List[OltResponse])
+async def get_all_olt_mapping(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetch all olt-pppoe mapping entries.
+    """
+    try:
+        result = await db.execute(
+            select(Olt).order_by(Olt.id)
+        )
+        olts = result.scalars().all()
+
+        return olts
+
+    except Exception as e:
+        logger.error(f"Error fetching OLT mappings: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch IP pools: {str(e)}"
+        )
+    
+
+@router.get(
+    "/pppoe-mapping/olt/{olt_id}",
+    response_model=List[OltResponse]
+)
+async def get_olt_mapping_by_id(
+    olt_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetch all Mikrotik mappings for an OLT.
+    """
+
+    try:
+        result = await db.execute(
+            select(Olt)
+            .where(Olt.olt_id == olt_id)
+            .order_by(Olt.id)
+        )
+
+        mappings = result.scalars().all()
+
+        if not mappings:
+            raise HTTPException(
+                status_code=404,
+                detail="No mappings found for this OLT"
+            )
+
+        return mappings
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logger.error(
+            f"Error fetching OLT mapping {olt_id}: {str(e)}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch OLT mappings"
+        )
+
+
+@router.post(
+    "/pppoe-mapping",
+    response_model=OltResponse,
+    status_code=status.HTTP_201_CREATED
+)
+
+
+async def create_olt_mapping(
+    mapping: OltMappingCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create OLT to Mikrotik mapping.
+    """
+
+    try:
+        # Check OLT exists and is actually an OLT
+        olt = await db.execute(
+            select(Device).where(
+                Device.id == mapping.olt_id,
+                Device.device_type == "olt"
+            )
+        )
+        olt = olt.scalar_one_or_none()
+
+        if not olt:
+            raise HTTPException(
+                status_code=404,
+                detail="OLT device not found"
+            )
+
+        # Check Mikrotik exists
+        mikrotik = await db.execute(
+            select(Device).where(
+                Device.id == mapping.mikrotik_id,
+                Device.manufacturer == "mikrotik"
+            )
+        )
+        mikrotik = mikrotik.scalar_one_or_none()
+
+        if not mikrotik:
+            raise HTTPException(
+                status_code=404,
+                detail="Mikrotik device not found"
+            )
+
+        # Check duplicate mapping
+        existing = await db.execute(
+            select(Olt).where(
+                Olt.olt_id == mapping.olt_id,
+                Olt.mikrotik_id == mapping.mikrotik_id
+            )
+        )
+
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail="OLT mapping already exists"
+            )
+
+        new_mapping = Olt(
+            olt_id=mapping.olt_id,
+            mikrotik_id=mapping.mikrotik_id
+        )
+
+        db.add(new_mapping)
+        await db.commit()
+        await db.refresh(new_mapping)
+
+        return new_mapping
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error creating OLT mapping: {str(e)}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create OLT mapping"
+        )

@@ -260,7 +260,7 @@ class IPPool(Base):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
     
-class OLT(Base):
+class Olt(Base):
     __tablename__ = "olts"
     __table_args__ = (
         UniqueConstraint(
@@ -291,13 +291,3 @@ class OLT(Base):
         foreign_keys=[mikrotik_id]
     )
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "olt_id": self.olt_id,
-            "olt_name": self.olt_device.name if self.olt_device else None,
-            "mikrotik_id": self.mikrotik_id,
-            "mikrotik_name": self.mikrotik_device.name if self.mikrotik_device else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-        }

@@ -426,3 +426,17 @@ class OltDeviceListResponse(BaseModel):
             }
         }
 
+
+class OltMappingCreate(BaseModel):
+    olt_id: int
+    mikrotik_id: int
+
+
+class OltResponse(BaseModel):
+    id: int
+    olt_id: int
+    mikrotik_id: int
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+    
