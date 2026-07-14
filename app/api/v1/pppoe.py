@@ -583,7 +583,7 @@ async def update_pppoe_user_by_username(
                                 detail=f"MikroTik device {new_mapping.mikrotik_id} not found"
                             )
 
-                        if mikrotik.device_type != "mikrotik": # raise error if device found isnt mikrotik
+                        if mikrotik.manufacturer != "mikrotik": # raise error if device found isnt mikrotik
                             raise HTTPException(
                                 status_code=400,
                                 detail=f"Device {new_mapping.mikrotik_id} is not a MikroTik device"
