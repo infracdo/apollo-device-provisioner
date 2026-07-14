@@ -10,7 +10,8 @@ from typing import Optional, Dict, Any
 import logging
 from datetime import datetime
 
-from app.models import PPPoEUser
+from app.api.v1.mikrotik import cidr_to_netmask, framed_ip_from_index
+from app.models import PPPoEUser, Device, IPPool, Olt
 from app.schemas.pppoe_schemas import (
     PPPoEUserCreate,
     PPPoEUserUpdate,
@@ -495,6 +496,7 @@ async def update_pppoe_user_by_username(
     - **username**: PPPoE username
     - All fields are optional; only provided fields will be updated
     - If Mikrotik attributes are changed, CoA is automatically triggered
+    - If olt device id is present, allow autofill/autogenerate for specific fields
     """
     try:
         result = await db.execute(
@@ -509,6 +511,7 @@ async def update_pppoe_user_by_username(
         original_rate_limit = user.mikrotik_rate_limit
         original_address_list = user.mikrotik_address_list
         original_group = user.mikrotik_group
+        original_olt_deviceid = user.onu_olt_deviceid
         
         # Update only provided fields
         update_data = user_data.model_dump(exclude_unset=True)
@@ -526,7 +529,109 @@ async def update_pppoe_user_by_username(
         
         for field, value in update_data.items():
             setattr(user, field, value)
-        
+
+        olt_changed = (
+            "onu_olt_deviceid" in update_data
+            and update_data["onu_olt_deviceid"] != original_olt_deviceid
+        )
+
+        # if onu_olt_deviceid exists in db and nas_ip_address/framed_ip_address/framed_ip_netmask are null, set nas_ip_address/framed_ip_address/framed_ip_netmask/onu_olt_ip according to onu_olt_deviceid 
+        olt_device_id = user.onu_olt_deviceid
+        if olt_device_id: 
+            # check if olt device exists in db
+            device_result = await db.execute(
+                select(Device).where(Device.id == olt_device_id)
+            )
+            olt_device = device_result.scalar_one_or_none()
+            if olt_device: # if olt device exists check which fields can be autofilled
+                if olt_device.device_type != "olt": #  raise error if device is not an olt
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Device {olt_device_id} is not an OLT"
+                    )
+                # fill onu olt ip if missing or if olt changed
+                if olt_changed or not user.onu_olt_ip:
+                    user.onu_olt_ip = olt_device.host
+
+                # find pppoe server mapped to the olt
+                mapping_result = await db.execute(
+                    select(Olt).where(Olt.olt_id == olt_device_id)
+                )
+                new_mapping = mapping_result.scalar_one_or_none()
+                if new_mapping: # if mapping exists, continue
+                    mapped_mikrotik_changed = False
+                    if olt_changed: # if olt changed, check if mikrotik changed
+                        old_mapping_result = await db.execute(
+                            select(Olt).where(Olt.olt_id == original_olt_deviceid)
+                        )
+                        old_mapping = old_mapping_result.scalar_one_or_none()
+
+                        if old_mapping is None:
+                            mapped_mikrotik_changed = True
+                        else:
+                            mapped_mikrotik_changed = (
+                                old_mapping.mikrotik_id != new_mapping.mikrotik_id
+                            )
+                    if mapped_mikrotik_changed or not user.nas_ip_address: # fill nas ip if missing or mikrotik changed
+                        mikrotik_result = await db.execute(
+                            select(Device).where(Device.id == new_mapping.mikrotik_id)
+                        )
+                        mikrotik = mikrotik_result.scalar_one_or_none()
+                        if not mikrotik: # raise error if mikrotik doesnt exist in device table 
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"MikroTik device {new_mapping.mikrotik_id} not found"
+                            )
+
+                        if mikrotik.device_type != "mikrotik": # raise error if device found isnt mikrotik
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Device {new_mapping.mikrotik_id} is not a MikroTik device"
+                            )
+
+                        port = mikrotik.port or 3799
+                        user.nas_ip_address = f"{mikrotik.host}:{port}" # eg. 10.50.1.1:3799
+
+                    pool = None
+                    if mapped_mikrotik_changed or not user.framed_ip_address or not user.framed_ip_netmask: # fill framed ip or netmask if missing or if mikrotik changed
+                        pool_result = await db.execute(
+                            select(IPPool)
+                            .where(IPPool.mikrotik_id == new_mapping.mikrotik_id)
+                            .with_for_update()
+                        )
+                        pool = pool_result.scalar_one_or_none()
+                        if pool:
+                            if mapped_mikrotik_changed or not user.framed_ip_address: # fill framed ip if missing or mikrotik changed
+                                current_ip = framed_ip_from_index(
+                                    pool.start_ip,
+                                    pool.subnet,
+                                    pool.counter
+                                )
+
+                                pool.counter += 1
+
+                                user.framed_ip_address = current_ip
+
+                            if mapped_mikrotik_changed or not user.framed_ip_netmask: # fill framed netmask if missing or mikrotik changed
+                                user.framed_ip_netmask = cidr_to_netmask(pool.subnet)
+
+                            await db.flush()
+                        else: # raise error if mikrotik doesnt have ip pool mapping
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"No IP pool configured for MikroTik {new_mapping.mikrotik_id}"
+                            )
+                else: # raise error if olt doesnt have pppoe server mapping 
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No PPPoE server mapping found for OLT device {olt_device_id}"
+                    )
+            else: # raise error if olt doesnt exist in devices table
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"OLT device {olt_device_id} not found"
+                )
+            
         await db.commit()
         await db.refresh(user)
         
@@ -536,13 +641,13 @@ async def update_pppoe_user_by_username(
         coa_result = None
         if settings.RADIUS_COA_ENABLED and user.nas_ip_address:
             # Check if any Mikrotik attributes changed
-            mikrotik_changed = (
+            mikrotik_attr_changed = (
                 (user.mikrotik_rate_limit != original_rate_limit and user.mikrotik_rate_limit is not None) or
                 (user.mikrotik_address_list != original_address_list and user.mikrotik_address_list is not None) or
                 (user.mikrotik_group != original_group and user.mikrotik_group is not None)
             )
             
-            if mikrotik_changed:
+            if mikrotik_attr_changed:
                 try:
                     # Parse target IP and port from nas_ip_address (format: "ip:port" or just "ip")
                     if ":" in user.nas_ip_address:
@@ -598,6 +703,7 @@ async def update_pppoe_user_by_username(
         return response_dict
         
     except HTTPException:
+        await db.rollback()
         raise
     except Exception as e:
         await db.rollback()
