@@ -1523,6 +1523,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                 "vlan port eth_0/2 mode tag vlan 200",
                 f"wan-ip 2 mode pppoe username {user} password {userkey} service-name {settings.ACS_SERVICE_NAME} vlan-profile vlan100 host 1",
                 f"tr069-mgmt 1 state unlock acs {settings.ACS_URL} validate basic username onu password onu tag pri 2 vlan 200",
+                "wan-ip 1 mode dhcp vlan-profile vlan200 host 2",
                 "exit",
                 "exit",
                 "exit",
