@@ -128,6 +128,37 @@ class ONU(Base):
         }
 
 
+class OnuDevice(Base):
+    """ONU Device model"""
+    __tablename__ = "onu_devices"
+    
+    id = Column(Integer, primary_key=True)
+    product_name = Column(String(255), nullable=False)
+    serial_number = Column(String(100), nullable=False, unique=True)
+    serial_number_2 = Column(String(100), unique=True)
+    property_code = Column(String(100), unique=True)
+    status = Column(String(100), nullable=False, default='active')
+    condition = Column(String(100), nullable=False, default='working')
+    site_id = Column(String(255), nullable=True)
+    site_name = Column(String(255), nullable=True)
+    date_updated = Column(DateTime(timezone=False), onupdate=func.now(), server_default=func.now())
+    
+    def to_dict(self):
+        """Convert to dictionary"""
+        return {
+            'id': self.id,
+            'product_name': self.product_name,
+            'serial_number': self.serial_number,
+            'serial_number_2': self.serial_number_2,
+            'property_code': self.property_code,
+            'status': self.status,
+            'condition': self.condition,
+            'site_id': self.site_id,
+            'site_name': self.site_name,
+            'date_updated': self.date_updated.isoformat() if self.date_updated else None,
+        }
+    
+
 class Queue(Base):
     """Queue model for Mikrotik"""
     __tablename__ = "queues"
