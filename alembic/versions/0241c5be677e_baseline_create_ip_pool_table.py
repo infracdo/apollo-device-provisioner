@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import INET, CIDR
 
 # revision identifiers, used by Alembic.
 revision = '0241c5be677e'
-down_revision = '6f94455d0318'
+down_revision = 'b4bad40e219f'
 branch_labels = None
 depends_on = None
 
