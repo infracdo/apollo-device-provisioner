@@ -76,3 +76,8 @@ class IPPoolCreate(BaseModel):
     start_ip: str
     subnet: str
     counter: int = 0
+
+class IPPoolUpdate(BaseModel):
+    start_ip: str
+    subnet: str
+    counter: int

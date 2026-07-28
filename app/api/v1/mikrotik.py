@@ -15,6 +15,7 @@ from app.models import IPPool
 from app.schemas.mikrotik_schemas import (
     IPPoolResponse,
     IPPoolCreate,
+    IPPoolUpdate,
     QueueCreateRequest,
     QueueUpdateRequest,
     QueueResponse,
@@ -284,6 +285,76 @@ async def create_ip_pool(
     }
 
 
+@router.put("/ip-pool/{mikrotik_id}", response_model=IPPoolResponse)
+async def update_ip_pool(
+    mikrotik_id: int,
+    payload: IPPoolUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update an existing IP pool.
+    """
+    try:
+        result = await db.execute(
+            select(IPPool)
+            .where(IPPool.mikrotik_id == mikrotik_id)
+            .with_for_update()
+        )
+        ip_pool = result.scalar_one_or_none()
+
+        if not ip_pool:
+            logger.warning(f"IP pool with mikrotik_id {mikrotik_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"IP pool with mikrotik_id {mikrotik_id} not found"
+            )
+
+        # Update fields
+        ip_pool.start_ip = payload.start_ip
+        ip_pool.subnet = ip_network(payload.subnet, strict=False)
+        ip_pool.counter = payload.counter
+
+        await db.commit()
+        await db.refresh(ip_pool)
+
+        current_ip = framed_ip_from_index(
+            ip_pool.start_ip,
+            ip_pool.subnet,
+            ip_pool.counter
+        )
+        next_ip = framed_ip_from_index(
+            ip_pool.start_ip,
+            ip_pool.subnet,
+            ip_pool.counter + 1
+        )
+
+        logger.info(
+            f"Updated IP pool: {ip_pool.id} "
+            f"(Counter: {ip_pool.counter}, Current IP: {current_ip}, Next IP: {next_ip})"
+        )
+
+        return {
+            "id": ip_pool.id,
+            "mikrotik_id": ip_pool.mikrotik_id,
+            "subnet": str(ip_pool.subnet),
+            "counter": ip_pool.counter,
+            "current_ip": current_ip,
+            "next_ip": next_ip,
+            "subnet_mask": cidr_to_netmask(ip_pool.subnet),
+            "updated_at": ip_pool.updated_at,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error updating IP pool: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update IP pool: {str(e)}"
+        )
+
+    
 @router.delete("/ip-pool/{mikrotik_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ip_pool(
     mikrotik_id: int,
