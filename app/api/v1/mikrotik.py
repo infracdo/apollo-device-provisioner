@@ -284,6 +284,45 @@ async def create_ip_pool(
     }
 
 
+@router.delete("/ip-pool/{mikrotik_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_ip_pool(
+    mikrotik_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete IP pool entry by mikrotik_id.
+    """
+    try:
+        result = await db.execute(
+            select(IPPool).where(IPPool.mikrotik_id == mikrotik_id)
+        )
+        ip_pool = result.scalar_one_or_none()
+
+        if not ip_pool:
+            logger.warning(f"IP pool with mikrotik_id {mikrotik_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"IP pool with mikrotik_id {mikrotik_id} not found"
+            )
+
+        await db.delete(ip_pool)
+        await db.commit()
+
+        logger.info(f"Deleted IP pool: {ip_pool.id} (mikrotik_id: {mikrotik_id})")
+
+        return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error deleting IP pool: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete IP pool: {str(e)}"
+        )
+    
+
 @router.get("/{id}/netmask")
 async def get_subnet_mask(
     id: int,
