@@ -152,43 +152,6 @@ async def get_all_ip_pools(
         )
 
 
-@router.get("/ip-pool/{mikrotik_id}", response_model=IPPoolResponse)
-async def get_ip_pool(
-    mikrotik_id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(
-        select(IPPool).where(IPPool.mikrotik_id == mikrotik_id)
-    )
-    ip_pool = result.scalar_one_or_none()
-
-    if not ip_pool:
-        raise HTTPException(status_code=404, detail="IP pool not found")
-
-    current_ip = framed_ip_from_index(
-        ip_pool.start_ip,
-        ip_pool.subnet,
-        ip_pool.counter,
-    )
-    next_ip = framed_ip_from_index(
-        ip_pool.start_ip,
-        ip_pool.subnet,
-        ip_pool.counter + 1,
-    )
-
-    return {
-        "id": ip_pool.id,
-        "mikrotik_id": ip_pool.mikrotik_id,
-        "start_ip": ip_pool.start_ip,
-        "subnet": str(ip_pool.subnet),
-        "counter": ip_pool.counter,
-        "current_ip": current_ip,
-        "next_ip": next_ip,
-        "subnet_mask": cidr_to_netmask(ip_pool.subnet),
-        "updated_at": ip_pool.updated_at,
-    }
-
-
 @router.get("/ip-pool/next", response_model=IPPoolResponse)
 async def get_ip_pool_next(
     mikrotik_id: int,
@@ -323,6 +286,43 @@ async def create_ip_pool(
         "next_ip": next_ip,
         "subnet_mask": cidr_to_netmask(new_pool.subnet),
         "updated_at": new_pool.updated_at,
+    }
+
+
+@router.get("/ip-pool/{mikrotik_id}", response_model=IPPoolResponse)
+async def get_ip_pool(
+    mikrotik_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(IPPool).where(IPPool.mikrotik_id == mikrotik_id)
+    )
+    ip_pool = result.scalar_one_or_none()
+
+    if not ip_pool:
+        raise HTTPException(status_code=404, detail="IP pool not found")
+
+    current_ip = framed_ip_from_index(
+        ip_pool.start_ip,
+        ip_pool.subnet,
+        ip_pool.counter,
+    )
+    next_ip = framed_ip_from_index(
+        ip_pool.start_ip,
+        ip_pool.subnet,
+        ip_pool.counter + 1,
+    )
+
+    return {
+        "id": ip_pool.id,
+        "mikrotik_id": ip_pool.mikrotik_id,
+        "start_ip": ip_pool.start_ip,
+        "subnet": str(ip_pool.subnet),
+        "counter": ip_pool.counter,
+        "current_ip": current_ip,
+        "next_ip": next_ip,
+        "subnet_mask": cidr_to_netmask(ip_pool.subnet),
+        "updated_at": ip_pool.updated_at,
     }
 
 
