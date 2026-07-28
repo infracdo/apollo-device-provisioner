@@ -1451,7 +1451,6 @@ async def list_olt_devices(
         raise HTTPException(status_code=500, detail=f"Failed to list users: {str(e)}")
 
 
-# TODO create api endpoints for olt table
 @router.get("/pppoe-mapping", response_model=List[OltResponse])
 async def get_all_olt_mapping(
     db: AsyncSession = Depends(get_db)
@@ -1517,6 +1516,58 @@ async def get_olt_mapping_by_id(
             detail="Failed to fetch OLT mappings"
         )
 
+
+@router.get(
+    "/pppoe-mapping/olt/by-mikrotik/{mikrotik_id}",
+    response_model=List[OltDeviceListResponse]
+)
+async def get_mikrotik_olt_devices(
+    mikrotik_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Return all OLT devices mapped to the specified Mikrotik.
+    """
+    try:
+        # Verify Mikrotik exists
+        result = await db.execute(
+            select(Device).where(
+                Device.id == mikrotik_id,
+                Device.manufacturer == "mikrotik"
+            )
+        )
+        mikrotik = result.scalar_one_or_none()
+
+        if not mikrotik:
+            raise HTTPException(
+                status_code=404,
+                detail="Mikrotik device not found"
+            )
+
+        result = await db.execute(
+            select(Device)
+            .join(Olt, Olt.olt_id == Device.id)
+            .where(
+                Olt.mikrotik_id == mikrotik_id,
+                Device.device_type == "olt"
+            )
+            .order_by(Device.id)
+        )
+
+        return result.scalars().all()
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logger.error(
+            f"Error fetching OLT devices for Mikrotik {mikrotik_id}: {e}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch OLT devices"
+        )
+    
 
 @router.post(
     "/pppoe-mapping",
