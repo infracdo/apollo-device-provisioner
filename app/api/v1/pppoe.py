@@ -602,15 +602,30 @@ async def update_pppoe_user_by_username(
                         pool = pool_result.scalar_one_or_none()
                         if pool:
                             if mapped_mikrotik_changed or not user.framed_ip_address: # fill framed ip if missing or mikrotik changed
-                                current_ip = framed_ip_from_index(
-                                    pool.start_ip,
-                                    pool.subnet,
-                                    pool.counter
-                                )
+                                # NOTE -- ASSIGN FRAMED IP ADDRESS ONLY IF NOT ASSIGNED TO OTHER PPPoE USERS 
+                                while True:
+                                    # Will raise 409 if the pool is exhausted
+                                    candidate_ip = framed_ip_from_index(
+                                        pool.start_ip,
+                                        pool.subnet,
+                                        pool.counter
+                                    )
 
-                                pool.counter += 1
+                                    # NOTE -- CHECK FOR EXISTING IP WHERE OLT HAS SAME MIKROTIK ID // IGNORE SAME IP FROM USERS NOT BELONGING TO SAME MIKROTIK
+                                    existing_ip = await db.execute(
+                                        select(PPPoEUser).where(
+                                            PPPoEUser.framed_ip_address == candidate_ip,
+                                            PPPoEUser.id != user.id,  # ignore the current user
+                                        )
+                                    )
 
-                                user.framed_ip_address = current_ip
+                                    if existing_ip.scalar_one_or_none() is None:
+                                        user.framed_ip_address = candidate_ip
+                                        pool.counter += 1
+                                        break
+
+                                    # IP already assigned, skip it and try the next one
+                                    pool.counter += 1
 
                             if mapped_mikrotik_changed or not user.framed_ip_netmask: # fill framed netmask if missing or mikrotik changed
                                 user.framed_ip_netmask = cidr_to_netmask(pool.subnet)
