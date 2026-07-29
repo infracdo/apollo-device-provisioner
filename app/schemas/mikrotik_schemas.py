@@ -61,10 +61,11 @@ class HotspotUserResponse(BaseModel):
 class IPPoolResponse(BaseModel):
     id: int
     mikrotik_id: int
+    start_ip: str
     subnet: str
     counter: int
     current_ip: str
-    next_ip: str
+    next_ip: Optional[str] = None
     subnet_mask: str
     updated_at: Optional[datetime] = None
 
@@ -75,9 +76,9 @@ class IPPoolCreate(BaseModel):
     mikrotik_id: int
     start_ip: str
     subnet: str
-    counter: int = 0
+    counter: int = Field(default=0, ge=0)
 
 class IPPoolUpdate(BaseModel):
     start_ip: str
     subnet: str
-    counter: int
+    counter: Optional[int] = Field(default=None, ge=0)
