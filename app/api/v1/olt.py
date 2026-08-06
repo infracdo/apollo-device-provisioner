@@ -495,6 +495,120 @@ async def reboot_olt_onu_by_serial(device_id: int, sn: str,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/onu/{device_id}/serial/{sn}")
+async def get_onu_by_serial(
+    device_id: int,
+    sn: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get ONU location by serial number on a specified OLT"""
+
+    # Get device
+    result = await db.execute(
+        select(Device).where(Device.id == device_id)
+    )
+    device = result.scalar_one_or_none()
+
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if device.device_type.lower() != "olt":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Device is not an OLT (type: {device.device_type})"
+        )
+
+    adapter = DeviceFactory.get_adapter(device)
+
+    try:
+        connected = await adapter.connect()
+
+        if not connected:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not connect to OLT {device.name}"
+            )
+
+        result = await adapter.get_ont_path_by_serial(sn)
+
+        if result["status"] == "error":
+            raise HTTPException(
+                status_code=404,
+                detail=result["message"]
+            )
+
+        return result
+
+    finally:
+        if hasattr(adapter, "disconnect"):
+            await adapter.disconnect()
+
+
+@router.get("/onu/serial/{sn}")
+async def get_onu_by_serial(
+    sn: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Find an ONU by serial number from any OLT"""
+
+    try:
+        result = await db.execute(
+            select(Device).where(Device.device_type.ilike("olt"))
+        )
+        devices = result.scalars().all()
+
+        if not devices:
+            raise HTTPException(
+                status_code=404,
+                detail="No OLT devices found"
+            )
+
+        for device in devices:
+            adapter = DeviceFactory.get_adapter(device)
+
+            try:
+                connected = await adapter.connect()
+
+                if not connected:
+                    logger.warning(
+                        "Cannot connect to OLT %s",
+                        device.name
+                    )
+                    continue
+
+                result = await adapter.get_ont_path_by_serial(sn)
+
+                if result.get("status") != "success":
+                    continue
+
+                return {
+                    "status": "success",
+                    "olt": {
+                        "id": device.id,
+                        "name": device.name
+                    },
+                    "data": result["data"]
+                }
+
+            finally:
+                if hasattr(adapter, "disconnect"):
+                    await adapter.disconnect()
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"ONU with serial number {sn} not found on any OLT"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error finding ONU by serial")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
 @router.get("/vlans/{device_id}", response_model=List[VLANResponse])
 async def get_vlans(device_id: int):
     """Get VLANs configured on OLT"""
