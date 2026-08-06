@@ -310,32 +310,58 @@ async def get_unconfigured_onus(
 
 
 @router.post("/onu/{device_id}/{ont_id}/reboot")
-async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int):
+async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int,
+    db: AsyncSession = Depends(get_db)):
     """Reboot an ONU"""
     try:
-        device_config = {
-            'id': device_id,
-            'ip_address': '192.168.1.1',
-            'port': 22,
-            'username': 'admin',
-            'password': 'admin',
-            'manufacturer': 'huawei'
-        }
-        
-        adapter = DeviceFactory.create_olt_adapter(
-            manufacturer=device_config['manufacturer'],
-            device_config=device_config
+        # Get device from database
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
         )
+        device = result.scalar_one_or_none()
         
-        async with adapter:
+        if not device:
+            logger.error(f"Device with ID {device_id} not found")
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        # Verify device is an OLT
+        if device.device_type.lower() != 'olt':
+            logger.error(f"Device {device_id} is not an OLT")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device is not an OLT (type: {device.device_type})"
+            )
+        logger.info(f"Rebooting ONU on gpon-onu_1/{slot}/{port}:{ont_id} of OLT device {device.name}")
+
+        adapter = DeviceFactory.get_adapter(device)
+
+        try:
+            # Connect to device
+            connected = await adapter.connect()
+            if not connected:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
+            
             result = await adapter.reboot_ont({
                 'slot': slot,
                 'port': port,
                 'ont_id': ont_id
             })
-        
-        return result
-        
+            
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            return result
+        finally:
+            # Always disconnect
+            if hasattr(adapter, 'disconnect'):
+                await adapter.disconnect()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error rebooting ONU: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

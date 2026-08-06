@@ -846,13 +846,25 @@ class ZTEOLTAdapter(BaseOLTAdapter):
             ont_id = onu_location.get('ont_id')
             
             # ZTE reboot command
-            cmd = f"gpon onu reboot gpon-onu_1/{slot}/{port}:{ont_id}"
-            output = await self.execute_command(cmd)
+            cmd = f"pon-onu-mng gpon-onu_1/{slot}/{port}:{ont_id}"
+            commands = [
+                "configure terminal",
+                cmd,
+                "reboot",
+                "yes",
+                "exit",
+                "exit"
+            ]
+            reboot_output = ""
+            for cmd in commands:
+                output = await self.execute_command(cmd)
+                reboot_output += f"{cmd}\n{output}\n"
             
-            if "Error" in output or "Invalid" in output:
+            logger.info(f"Reboot Output {reboot_output}")
+            if "Error" in reboot_output or "Invalid" in reboot_output or "Failed" in reboot_output or "not exist" in reboot_output.lower():
                 return {
                     'status': 'error',
-                    'message': f'Failed to reboot ONU: {output}'
+                    'message': f'Failed to reboot ONU: {reboot_output}'
                 }
             
             logger.info(f"Rebooted ONU {ont_id} on ZTE OLT")
