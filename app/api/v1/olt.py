@@ -501,7 +501,7 @@ async def get_onu_by_serial(
     sn: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Get ONU location by serial number on a specified OLT"""
+    """Get ONU location by serial number from a specified OLT"""
 
     # Get device
     result = await db.execute(

@@ -892,13 +892,13 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                     'message': f'Failed to find ONU: {output}'
                 }
             
-            logger.info(f"Found ONU {sn} on ZTE OLT")
             result = self._parse_ont_path(output)
             if not result:
                 return {
                     "status": "error",
                     "message": "ONU not found"
                 }
+            logger.info(f"Found ONU {sn} on ZTE OLT")
 
             return {
                 "status": "success",
@@ -920,6 +920,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         
         Format: gpon-olt_board/card/port:ont_id
         """
+        logger.info(f"Parsing ONU path output: {output}")
         for line in output.splitlines():
             line = line.strip()
 
