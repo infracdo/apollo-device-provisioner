@@ -841,12 +841,13 @@ class ZTEOLTAdapter(BaseOLTAdapter):
     async def reboot_ont(self, onu_location: Dict[str, Any]) -> Dict[str, Any]:
         """Reboot ONU"""
         try:
+            board = onu_location.get('board', 1)
             slot = onu_location.get('slot', 1)
             port = onu_location.get('port', 1)
             ont_id = onu_location.get('ont_id')
             
             # ZTE reboot command
-            cmd = f"pon-onu-mng gpon-onu_1/{slot}/{port}:{ont_id}"
+            cmd = f"pon-onu-mng gpon-onu_{board}/{slot}/{port}:{ont_id}"
             commands = [
                 "configure terminal",
                 cmd,
@@ -858,7 +859,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
             reboot_output = ""
             for cmd in commands:
                 output = await self.execute_command(cmd)
-                reboot_output += f"{cmd}\n{output}\n"
+                reboot_output += f"\n> {cmd}\n{output.strip()}\n"
             
             logger.info(f"Reboot Output {reboot_output}")
             if "Error" in reboot_output or "Invalid" in reboot_output or "Failed" in reboot_output or "not exist" in reboot_output.lower():
@@ -876,6 +877,77 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         except Exception as e:
             logger.error(f"Failed to reboot ONU on ZTE: {e}")
             return {'status': 'error', 'message': str(e)}
+    
+    async def get_ont_path_by_serial(self, sn: str) -> Dict[str, Any]:
+        """Get ONU information by serial number"""
+        try:
+            # ZTE command to show ONU information
+            cmd = f"show gpon onu by sn {sn}"
+            output = await self.execute_command(cmd)
+            
+            logger.info(f"Find ONU Output {output}")
+            if "Error" in output or "no entries found" in output.lower():
+                return {
+                    'status': 'error',
+                    'message': f'Failed to find ONU: {output}'
+                }
+            
+            logger.info(f"Found ONU {sn} on ZTE OLT")
+            result = self._parse_ont_path(output)
+            if not result:
+                return {
+                    "status": "error",
+                    "message": "ONU not found"
+                }
+
+            return {
+                "status": "success",
+                "data": result
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to find ONU on ZTE: {e}")
+            return {'status': 'error', 'message': str(e)}
+    
+    def _parse_ont_path(self, output: str) -> Dict[str, Any] | None:
+        """
+        Parse 'show pon onu by sn' output from ZTE OLT.
+        
+        Example output:
+        Search result
+        -----------------
+        gpon-olt_1/1/1:102
+        
+        Format: gpon-olt_board/card/port:ont_id
+        """
+        for line in output.splitlines():
+            line = line.strip()
+
+            if (
+                not line
+                or "Search" in line
+                or "---" in line
+            ):
+                continue
+            
+            if line.startswith("gpon-olt_"):
+                match = re.search(
+                    r"gpon-olt_(\d+)/(\d+)/(\d+):(\d+)",
+                    line
+                )
+
+                if match:
+                    board, slot, port, ont_id = match.groups()
+
+                    return {
+                        "interface": line,
+                        "board": int(board),
+                        "slot": int(slot),
+                        "port": int(port),
+                        "ont_id": int(ont_id)
+                    }
+        
+        return None
     
     async def get_unconfigured_onts(self) -> List[Dict[str, Any]]:
         """
