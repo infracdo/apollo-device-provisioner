@@ -12,6 +12,7 @@ from datetime import datetime
 
 from app.api.v1.mikrotik import cidr_to_netmask, framed_ip_from_index
 from app.models import PPPoEUser, Device, IPPool, Olt
+from app.services.device_factory import DeviceFactory
 from app.schemas.pppoe_schemas import (
     PPPoEUserCreate,
     PPPoEUserUpdate,
@@ -1358,8 +1359,8 @@ async def activate_user(
         await db.refresh(user)
         
         logger.info(f"✅ Activated user: {username}")
-        
-        return {
+
+        response = {
             "status": "success",
             "message": "User activated successfully",
             "username": username,
@@ -1367,6 +1368,15 @@ async def activate_user(
             "was_changed": True,
             "note": "User can now authenticate and connect"
         }
+
+        onu_reboot_result = await _reboot_onu_for_user(user)
+        if onu_reboot_result:
+            response["onu_reboot_attempted"] = True
+            response["onu_reboot_result"] = onu_reboot_result
+        else:
+            response["onu_reboot_attempted"] = False
+        
+        return response
         
     except HTTPException:
         raise
@@ -1480,6 +1490,13 @@ async def deactivate_user(
                 response["disconnect_reason"] = "No NAS IP configured"
             elif not was_active:
                 response["disconnect_reason"] = "User was already inactive"
+        
+        onu_reboot_result = await _reboot_onu_for_user(user)
+        if onu_reboot_result:
+            response["onu_reboot_attempted"] = True
+            response["onu_reboot_result"] = onu_reboot_result
+        else:
+            response["onu_reboot_attempted"] = False
         
         return response
         
@@ -1601,6 +1618,13 @@ async def mark_user_overdue(
             elif not user.nas_ip_address:
                 response["reconnect_reason"] = "No NAS IP configured"
         
+        onu_reboot_result = await _reboot_onu_for_user(user)
+        if onu_reboot_result:
+            response["onu_reboot_attempted"] = True
+            response["onu_reboot_result"] = onu_reboot_result
+        else:
+            response["onu_reboot_attempted"] = False
+
         return response
         
     except HTTPException:
@@ -1721,6 +1745,13 @@ async def clear_user_overdue(
             elif not user.nas_ip_address:
                 response["reconnect_reason"] = "No NAS IP configured"
         
+        onu_reboot_result = await _reboot_onu_for_user(user)
+        if onu_reboot_result:
+            response["onu_reboot_attempted"] = True
+            response["onu_reboot_result"] = onu_reboot_result
+        else:
+            response["onu_reboot_attempted"] = False
+        
         return response
         
     except HTTPException:
@@ -1730,3 +1761,36 @@ async def clear_user_overdue(
         logger.error(f"Error clearing overdue status for user '{username}': {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to clear overdue status: {str(e)}")
 
+
+async def _reboot_onu_for_user(user: PPPoEUser, db: AsyncSession = Depends(get_db)) -> Optional[Dict[str, Any]]:
+    """Best-effort ONU reboot for a PPPoE user. Never raises."""
+    if not user.onu_serial_number or not user.onu_olt_deviceid:
+        return None
+
+    result = await db.execute(select(Device).where(Device.id == user.onu_olt_deviceid))
+    olt_device = result.scalar_one_or_none()
+    if not olt_device or olt_device.device_type != "olt":
+        return {"success": False, "message": "OLT device not found or invalid"}
+
+    adapter = DeviceFactory.get_adapter(olt_device)
+    try:
+        if not await adapter.connect():
+            return {"success": False, "message": f"Could not connect to OLT {olt_device.name}"}
+
+        ont_location = await adapter.get_ont_path_by_serial(user.onu_serial_number)
+        if not ont_location:
+            return {"success": False, "message": f"ONU {user.onu_serial_number} not found on OLT"}
+
+        reboot_result = await adapter.reboot_ont({
+            "board": ont_location["board"],
+            "slot": ont_location["slot"],
+            "port": ont_location["port"],
+            "ont_id": ont_location["ont_id"],
+        })
+        return {"success": reboot_result.get("status") != "error", "message": reboot_result.get("message", "")}
+    except Exception as e:
+        logger.error(f"[ONU Reboot] Error rebooting ONU for {user.user_name}: {e}")
+        return {"success": False, "message": str(e)}
+    finally:
+        if hasattr(adapter, "disconnect"):
+            await adapter.disconnect()
