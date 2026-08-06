@@ -310,9 +310,122 @@ async def get_unconfigured_onus(
 
 
 @router.post("/onu/{device_id}/{ont_id}/reboot")
-async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int,
-    db: AsyncSession = Depends(get_db)):
+async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int):
     """Reboot an ONU"""
+    try:
+        device_config = {
+            'id': device_id,
+            'ip_address': '192.168.1.1',
+            'port': 22,
+            'username': 'admin',
+            'password': 'admin',
+            'manufacturer': 'huawei'
+        }
+        
+        adapter = DeviceFactory.create_olt_adapter(
+            manufacturer=device_config['manufacturer'],
+            device_config=device_config
+        )
+        
+        async with adapter:
+            result = await adapter.reboot_ont({
+                'board': 1,
+                'slot': slot,
+                'port': port,
+                'ont_id': ont_id
+            })
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error rebooting ONU: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/onu/serial/{sn}/reboot")
+async def reboot_any_onu_by_serial(sn: str,
+    db: AsyncSession = Depends(get_db)):
+    """Reboot an ONU by serial number from any OLT"""
+    try:
+        # NOTE -- get all devices from db where device_type == 'olt' and loop through them to find the ONU by serial number 
+        # TODO -- find more efficient way for scenarios with more than 100 OLTs  
+        # Get all OLT devices
+        result = await db.execute(
+            select(Device).where(Device.device_type.ilike("olt"))
+        )
+        devices = result.scalars().all()
+
+        if not devices:
+            raise HTTPException(
+                status_code=404,
+                detail="No OLT devices found"
+            )
+
+        for device in devices:
+            adapter = DeviceFactory.get_adapter(device)
+            try:
+                connected = await adapter.connect()
+
+                if not connected:
+                    logger.warning(
+                        "Cannot connect to OLT %s",
+                        device.name
+                    )
+                    continue
+
+                ont_location = await adapter.get_ont_path_by_serial(sn)
+                if not ont_location:
+                    logger.info(
+                        "ONU %s not found on %s",
+                        sn,
+                        device.name
+                    )
+                    continue
+
+                board = ont_location["board"]
+                slot = ont_location["slot"]
+                port = ont_location["port"]
+                ont_id = ont_location["ont_id"]
+
+                logger.info("Rebooting ONU %s on gpon-onu_%s/%s/%s:%s (%s)", 
+                            sn, board, slot, port, ont_id, device.name)
+
+                result = await adapter.reboot_ont({
+                    "board": board,
+                    "slot": slot,
+                    "port": port,
+                    "ont_id": ont_id
+                })
+
+                if result['status'] == 'error':
+                    raise HTTPException(
+                        status_code=500,
+                        detail=result['message']
+                    )
+                return result
+
+            finally:
+                if hasattr(adapter, "disconnect"):
+                    await adapter.disconnect()
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"ONU with serial number {sn} not found on any OLT"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error rebooting ONU by serial")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+        
+
+@router.post("/{device_id}/onu/serial/{sn}/reboot")
+async def reboot_olt_onu_by_serial(device_id: int, sn: str,
+    db: AsyncSession = Depends(get_db)):
+    """Reboot an ONU in a specified OLT"""
     try:
         # Get device from database
         result = await db.execute(
@@ -331,8 +444,7 @@ async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int,
                 status_code=400,
                 detail=f"Device is not an OLT (type: {device.device_type})"
             )
-        logger.info(f"Rebooting ONU on gpon-onu_1/{slot}/{port}:{ont_id} of OLT device {device.name}")
-
+        
         adapter = DeviceFactory.get_adapter(device)
 
         try:
@@ -344,7 +456,22 @@ async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int,
                     detail=f"Could not connect to OLT device {device.name}"
                 )
             
+            ont_location = await adapter.get_ont_path_by_serial(sn)
+            if not ont_location:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"ONU with serial number {sn} not found"
+                )
+            
+            board = ont_location['board']
+            slot = ont_location['slot']
+            port = ont_location['port']
+            ont_id = ont_location['ont_id']
+
+            logger.info(f"Rebooting ONU on gpon-onu_{board}/{slot}/{port}:{ont_id} of OLT device {device.name}")
+            
             result = await adapter.reboot_ont({
+                'board': board,
                 'slot': slot,
                 'port': port,
                 'ont_id': ont_id
@@ -356,6 +483,7 @@ async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int,
                     detail=result['message']
                 )
             return result
+        
         finally:
             # Always disconnect
             if hasattr(adapter, 'disconnect'):
@@ -1677,3 +1805,4 @@ async def create_olt_mapping(
             status_code=500,
             detail="Failed to create OLT mapping"
         )
+
