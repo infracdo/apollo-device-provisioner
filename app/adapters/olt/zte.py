@@ -916,9 +916,9 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         Example output:
         Search result
         -----------------
-        gpon-olt_1/1/1:102
+        gpon-onu_1/1/1:102
         
-        Format: gpon-olt_board/card/port:ont_id
+        Format: gpon-onu_<board>/<slot>/<port>:<ont_id>
         """
         logger.info(f"Parsing ONU path output: {output}")
         for line in output.splitlines():
@@ -931,9 +931,9 @@ class ZTEOLTAdapter(BaseOLTAdapter):
             ):
                 continue
             
-            if line.startswith("gpon-olt_"):
+            if line.startswith("gpon-onu_"):
                 match = re.search(
-                    r"gpon-olt_(\d+)/(\d+)/(\d+):(\d+)",
+                    r"gpon-onu_(\d+)/(\d+)/(\d+):(\d+)",
                     line
                 )
 
