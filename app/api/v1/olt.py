@@ -309,39 +309,6 @@ async def get_unconfigured_onus(
         raise handle_device_error(e, "Failed to get unconfigured ONUs", device_id)
 
 
-@router.post("/onu/{device_id}/{ont_id}/reboot")
-async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int):
-    """Reboot an ONU"""
-    try:
-        device_config = {
-            'id': device_id,
-            'ip_address': '192.168.1.1',
-            'port': 22,
-            'username': 'admin',
-            'password': 'admin',
-            'manufacturer': 'huawei'
-        }
-        
-        adapter = DeviceFactory.create_olt_adapter(
-            manufacturer=device_config['manufacturer'],
-            device_config=device_config
-        )
-        
-        async with adapter:
-            result = await adapter.reboot_ont({
-                'board': 1,
-                'slot': slot,
-                'port': port,
-                'ont_id': ont_id
-            })
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error rebooting ONU: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.post("/onu/serial/{sn}/reboot")
 async def reboot_any_onu_by_serial(sn: str,
     db: AsyncSession = Depends(get_db)):
@@ -495,8 +462,41 @@ async def reboot_olt_onu_by_serial(device_id: int, sn: str,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/onu/{device_id}/{ont_id}/reboot")
+async def reboot_onu(device_id: int, ont_id: int, slot: int, port: int):
+    """Reboot an ONU"""
+    try:
+        device_config = {
+            'id': device_id,
+            'ip_address': '192.168.1.1',
+            'port': 22,
+            'username': 'admin',
+            'password': 'admin',
+            'manufacturer': 'huawei'
+        }
+        
+        adapter = DeviceFactory.create_olt_adapter(
+            manufacturer=device_config['manufacturer'],
+            device_config=device_config
+        )
+        
+        async with adapter:
+            result = await adapter.reboot_ont({
+                'board': 1,
+                'slot': slot,
+                'port': port,
+                'ont_id': ont_id
+            })
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error rebooting ONU: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/onu/{device_id}/serial/{sn}")
-async def get_onu_by_serial(
+async def get_olt_onu_by_serial(
     device_id: int,
     sn: str,
     db: AsyncSession = Depends(get_db)
