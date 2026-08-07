@@ -21,6 +21,7 @@ from app.connectors.telnet_connector import TelnetConnector
 from app.utils.logging import logger
 from app.config import settings
 
+CONFIRMATION_SUFFIXES = ('[yes/no]:', '[y/n]:')
 
 class ZTEOLTAdapter(BaseOLTAdapter):
     """ZTE OLT adapter implementation"""
@@ -184,6 +185,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         ZTE-specific implementation that works better with ZTE's CLI behavior.
         Includes automatic re-authentication if session expires.
         """
+
         if not self.is_connected or not self.connector:
             raise ConnectionError("Not connected to device")
         
@@ -227,8 +229,8 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                         logger.debug(f"[ZTE CMD] Iteration {iteration+1}: Last 100 chars of output: {repr(output[-100:])}")
                         
                         # Check for prompt (ZXAN#) at end
-                        prompt_found = chunk.endswith('#') or '\r\nZXAN#' in chunk or '\nZXAN#' in chunk
-                        logger.debug(f"[ZTE CMD] Iteration {iteration+1}: Checking for prompt - ends with '#': {chunk.endswith('#')}, contains ZXAN#: {'ZXAN#' in chunk}")
+                        prompt_found = chunk.endswith('#') or '\r\nZXAN#' in chunk or '\nZXAN#' in chunk or chunk.rstrip().endswith(CONFIRMATION_SUFFIXES)
+                        logger.debug(f"[ZTE CMD] Iteration {iteration+1}: Checking for prompt - ends with '#': {chunk.endswith('#')}, contains ZXAN#: {'ZXAN#' in chunk}, ends with ':': {chunk.rstrip().endswith(CONFIRMATION_SUFFIXES)}")
                         
                         if prompt_found:
                             logger.info(f"[ZTE CMD] Iteration {iteration+1}: Found prompt marker in chunk, command complete")
@@ -241,6 +243,9 @@ class ZTEOLTAdapter(BaseOLTAdapter):
                         # If we have some output and it ends with #, we're done
                         if output and (output.strip().endswith('#') or 'ZXAN#' in output[-20:]):
                             logger.info(f"[ZTE CMD] Output ends with prompt marker, command complete")
+                            break
+                        # If we have some output and it ends with [yes/no]:, we may need to handle confirmation
+                        if output.rstrip().endswith(CONFIRMATION_SUFFIXES):
                             break
                         # Otherwise, no more data
                         if len(output) > 50:  # We got something, that's enough
