@@ -1369,7 +1369,7 @@ async def activate_user(
             "note": "User can now authenticate and connect"
         }
 
-        onu_reboot_result = await _reboot_onu_for_user(user)
+        onu_reboot_result = await _reboot_onu_for_user(user, db)
         if onu_reboot_result:
             response["onu_reboot_attempted"] = True
             response["onu_reboot_result"] = onu_reboot_result
@@ -1491,7 +1491,7 @@ async def deactivate_user(
             elif not was_active:
                 response["disconnect_reason"] = "User was already inactive"
         
-        onu_reboot_result = await _reboot_onu_for_user(user)
+        onu_reboot_result = await _reboot_onu_for_user(user, db)
         if onu_reboot_result:
             response["onu_reboot_attempted"] = True
             response["onu_reboot_result"] = onu_reboot_result
@@ -1618,7 +1618,7 @@ async def mark_user_overdue(
             elif not user.nas_ip_address:
                 response["reconnect_reason"] = "No NAS IP configured"
         
-        onu_reboot_result = await _reboot_onu_for_user(user)
+        onu_reboot_result = await _reboot_onu_for_user(user, db)
         if onu_reboot_result:
             response["onu_reboot_attempted"] = True
             response["onu_reboot_result"] = onu_reboot_result
@@ -1745,7 +1745,7 @@ async def clear_user_overdue(
             elif not user.nas_ip_address:
                 response["reconnect_reason"] = "No NAS IP configured"
         
-        onu_reboot_result = await _reboot_onu_for_user(user)
+        onu_reboot_result = await _reboot_onu_for_user(user, db)
         if onu_reboot_result:
             response["onu_reboot_attempted"] = True
             response["onu_reboot_result"] = onu_reboot_result
@@ -1762,7 +1762,7 @@ async def clear_user_overdue(
         raise HTTPException(status_code=500, detail=f"Failed to clear overdue status: {str(e)}")
 
 
-async def _reboot_onu_for_user(user: PPPoEUser, db: AsyncSession = Depends(get_db)) -> Optional[Dict[str, Any]]:
+async def _reboot_onu_for_user(user: PPPoEUser, db: AsyncSession) -> Optional[Dict[str, Any]]:
     """Best-effort ONU reboot for a PPPoE user. Never raises."""
     if not user.onu_serial_number or not user.onu_olt_deviceid:
         return None
