@@ -40,7 +40,7 @@ from app.utils.profile_mapper import normalize_profile_list
 from app.utils.snmp_onu_checker import SNMPONUChecker
 from app.utils.kafka import publish_to_kafka
 from app.database import get_db
-from app.models import Device, Olt
+from app.models import PPPoEUser, Device, Olt
 
 router = APIRouter(prefix="/olt")
 
@@ -313,71 +313,119 @@ async def get_unconfigured_onus(
 async def reboot_any_onu_by_serial(sn: str,
     db: AsyncSession = Depends(get_db)):
     """Reboot an ONU by serial number from any OLT"""
-    try:
-        # NOTE -- get all devices from db where device_type == 'olt' and loop through them to find the ONU by serial number 
-        # TODO -- find more efficient way for scenarios with more than 100 OLTs  
-        # Get all OLT devices
-        result = await db.execute(
-            select(Device).where(Device.device_type.ilike("olt"))
+    sn = sn.strip()
+    if not sn:
+        raise HTTPException(
+            status_code=400,
+            detail="ONU serial number is required",
         )
-        devices = result.scalars().all()
-
-        if not devices:
-            raise HTTPException(
-                status_code=404,
-                detail="No OLT devices found"
+    
+    try:
+        # 1. Get pppoe user info associated with sn [ok]
+        # 2. Get olt onu id of pppoe user [ok]
+        # 3. Get device info of olt [ok]
+        # 4. Init olt adapter [ok]
+        # 5. Get onu path associated with sn [ok]
+        # 6. Reboot onu by olt path [ok]
+        result = await db.execute(
+            select(PPPoEUser).where(
+                (PPPoEUser.onu_serial_number == sn) |
+                (PPPoEUser.onu_secondary_serial_number == sn)
             )
+        )
 
-        for device in devices:
-            adapter = DeviceFactory.get_adapter(device)
-            try:
-                connected = await adapter.connect()
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with serial number {sn} not found")
 
-                if not connected:
-                    logger.warning(
-                        "Cannot connect to OLT %s",
-                        device.name
-                    )
-                    continue
+        device_id = user.onu_olt_deviceid
+        if not device_id:
+            logger.error("ONU %s has no associated OLT device ID", sn,)
+            raise HTTPException(
+                status_code=409,
+                detail="ONU has no associated OLT device",
+            )
+        
+        result = await db.execute(
+            select(Device).where(Device.id == device_id)
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            logger.error(f"Device with ID {device_id} not found")
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        # Verify device is an OLT
+        if device.device_type.lower() != 'olt':
+            logger.error(f"Device {device_id} is not an OLT")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Device is not an OLT (type: {device.device_type})"
+            )
+        
+        adapter = DeviceFactory.get_adapter(device)
+        try:
+            connected = await adapter.connect()
+            if not connected:
+                logger.warning("Cannot connect to OLT %s", device.name)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not connect to OLT device {device.name}"
+                )
 
-                ont_result = await adapter.get_ont_path_by_serial(sn)
-                if ont_result["status"] != "success":
+            ont_result = await adapter.get_ont_path_by_serial_redis(sn)
+            if ont_result["status"] != "success":
+                message = (ont_result.get("message") or "").lower()
+                if message == "onu not found":
                     raise HTTPException(
                         status_code=404,
-                        detail=ont_result["message"]
+                        detail=ont_result["message"],
                     )
 
-                ont_location = ont_result["data"]
-                board = ont_location["board"]
-                slot = ont_location["slot"]
-                port = ont_location["port"]
-                ont_id = ont_location["ont_id"]
-
-                logger.info("Rebooting ONU %s on gpon-onu_%s/%s/%s:%s (%s)", 
-                            sn, board, slot, port, ont_id, device.name)
-
-                result = await adapter.reboot_ont({
-                    "board": board,
-                    "slot": slot,
-                    "port": port,
-                    "ont_id": ont_id
-                })
-
-                if result['status'] == 'error':
+                if message == "redis connection unavailable":
                     raise HTTPException(
-                        status_code=500,
-                        detail=result['message']
+                        status_code=503,
+                        detail=ont_result["message"],
                     )
-                return result
 
-            finally:
-                if hasattr(adapter, "disconnect"):
+                raise HTTPException(
+                    status_code=500,
+                    detail=ont_result["message"],
+                )
+
+            ont_location = ont_result["data"]
+            board = ont_location["board"]
+            slot = ont_location["slot"]
+            port = ont_location["port"]
+            ont_id = ont_location["ont_id"]
+
+            logger.info("Rebooting ONU %s on gpon-onu_%s/%s/%s:%s (%s)", 
+                        sn, board, slot, port, ont_id, device.name)
+
+            result = await adapter.reboot_ont({
+                "board": board,
+                "slot": slot,
+                "port": port,
+                "ont_id": ont_id
+            })
+
+            if result['status'] == 'error':
+                raise HTTPException(
+                    status_code=500,
+                    detail=result['message']
+                )
+            return result
+
+        finally:
+            if hasattr(adapter, "disconnect"):
+                try:
                     await adapter.disconnect()
+                except Exception:
+                    logger.exception(
+                        "Failed to disconnect from OLT %s (%s)",
+                        device.name,
+                        device_id,
+                    )
 
-        raise HTTPException(
-            status_code=404,
-            detail=f"ONU with serial number {sn} not found on any OLT"
-        )
     except HTTPException:
         raise
     except Exception as e:
