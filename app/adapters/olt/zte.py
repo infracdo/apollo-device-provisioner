@@ -18,6 +18,7 @@ import re
 from app.adapters.olt.base_olt import BaseOLTAdapter
 from app.connectors.ssh_connector import SSHConnector
 from app.connectors.telnet_connector import TelnetConnector
+from app.connectors.redis_connector import RedisConnector
 from app.utils.logging import logger
 from app.config import settings
 
@@ -913,6 +914,111 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         except Exception as e:
             logger.error(f"Failed to find ONU on ZTE: {e}")
             return {'status': 'error', 'message': str(e)}
+    
+    async def get_ont_path_by_serial_redis(self, sn: str) -> Dict[str, Any]:
+        """Get ONU information by serial number via Redis."""
+        if not isinstance(sn, str) or not sn.strip():
+            return {
+                "status": "error",
+                "message": "Invalid ONU serial number",
+            }
+
+        sn = sn.strip()
+        key = f"hash:network:zte:prod:{sn}"
+        redis_connector = RedisConnector(
+            timeout=5,
+        )
+        
+        try:
+            if not await redis_connector.connect():
+                logger.error("Unable to connect to Redis while finding ONU %s", sn,)
+                return {
+                    "status": "error",
+                    "message": "Redis connection unavailable",
+                }
+            
+            result = await redis_connector.hgetall(key)
+            if not result:
+                logger.info("ONU %s not found on ZTE OLT", sn,)
+                return {
+                    "status": "error",
+                    "message": "ONU not found",
+                }
+
+            onu_interface = result.get("int")
+            if not isinstance(onu_interface, str) or not onu_interface.strip():
+                logger.warning("ONU %s found but interface is missing: %s", sn, result,)
+                return {
+                    "status": "error",
+                    "message": "ONU found but interface path is missing",
+                }
+
+            onu_interface = onu_interface.strip()
+            logger.info("Found ONU %s on ZTE OLT: %s", sn, onu_interface,)
+
+            parsed_result = self._parse_ont_path_redis(onu_interface)
+            return {
+                "status": "success",
+                "data": parsed_result,
+            }
+        except ConnectionError as e:
+            logger.error("Redis connection error while finding ONU %s: %s", sn, str(e),)
+            return {
+                "status": "error",
+                "message": "Redis connection unavailable",
+            }
+        except ValueError as e:
+            logger.error("Invalid ONU interface for %s: %s", sn, str(e),)
+            return {
+                "status": "error",
+                "message": "Invalid ONU interface path",
+            }
+        except Exception as e:
+            logger.exception("Failed to find ONU %s on ZTE Redis", sn,)
+            return {
+                "status": "error",
+                "message": "Failed to retrieve ONU information",
+            }
+        finally:
+            await redis_connector.disconnect()
+
+    def _parse_ont_path_redis(self, line: str) -> Dict[str, Any]:
+        """Parse ZTE GPON ONU interface.
+
+        Example:
+            GPON-ONU_1/2/6:4
+
+        Returns:
+            {
+                "interface": "GPON-ONU_1/2/6:4",
+                "board": 1,
+                "slot": 2,
+                "port": 6,
+                "ont_id": 4,
+            }
+        """
+
+        if not isinstance(line, str) or not line.strip():
+            raise ValueError("Invalid ZTE interface")
+
+        line = line.strip()
+        match = re.fullmatch(
+            r"GPON-ONU_(\d+)/(\d+)/(\d+):(\d+)",
+            line,
+            re.IGNORECASE,
+        )
+
+        if not match:
+            raise ValueError(f"Invalid ZTE GPON interface: {line}")
+
+        board, slot, port, ont_id = match.groups()
+        return {
+            "interface": line.lower(),
+            "board": int(board),
+            "slot": int(slot),
+            "port": int(port),
+            "ont_id": int(ont_id),
+        }
     
     def _parse_ont_path(self, output: str) -> Dict[str, Any] | None:
         """
