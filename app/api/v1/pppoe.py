@@ -1777,7 +1777,7 @@ async def _reboot_onu_for_user(user: PPPoEUser, db: AsyncSession) -> Optional[Di
         if not await adapter.connect():
             return {"success": False, "message": f"Could not connect to OLT {olt_device.name}"}
 
-        ont_result = await adapter.get_ont_path_by_serial_redis(user.onu_serial_number, True)
+        ont_result = await adapter.get_ont_path_by_serial_redis(user.onu_serial_number)
         if ont_result["status"] != "success":
             return {"success": False, "message": f"ONU {user.onu_serial_number} not found on OLT"}
 
