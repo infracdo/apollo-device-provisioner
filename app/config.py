@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_CACHE_EXPIRE: int = 3600
     
+    # Redis prod
+    REDIS_HOST: str = "192.168.61.60"
+    REDIS_USERNAME: str = "user"
+    REDIS_PASSWORD: str = "user"
+    REDIS_PORT: int = 6379
+    
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"

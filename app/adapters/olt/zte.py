@@ -926,6 +926,9 @@ class ZTEOLTAdapter(BaseOLTAdapter):
         sn = sn.strip()
         key = f"hash:network:zte:{'test' if test else 'prod'}:{sn}"
         redis_connector = RedisConnector(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            password=settings.REDIS_PASSWORD,
             timeout=5,
         )
         
