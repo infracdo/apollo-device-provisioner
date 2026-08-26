@@ -915,7 +915,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
             logger.error(f"Failed to find ONU on ZTE: {e}")
             return {'status': 'error', 'message': str(e)}
     
-    async def get_ont_path_by_serial_redis(self, sn: str) -> Dict[str, Any]:
+    async def get_ont_path_by_serial_redis(self, sn: str, test: bool = False) -> Dict[str, Any]:
         """Get ONU information by serial number via Redis."""
         if not isinstance(sn, str) or not sn.strip():
             return {
@@ -924,7 +924,7 @@ class ZTEOLTAdapter(BaseOLTAdapter):
             }
 
         sn = sn.strip()
-        key = f"hash:network:zte:prod:{sn}"
+        key = f"hash:network:zte:{'test' if test else 'prod'}:{sn}"
         redis_connector = RedisConnector(
             timeout=5,
         )

@@ -310,7 +310,7 @@ async def get_unconfigured_onus(
 
 
 @router.post("/onu/serial/{sn}/reboot")
-async def reboot_any_onu_by_serial(sn: str,
+async def reboot_any_onu_by_serial(sn: str, test: bool = False, 
     db: AsyncSession = Depends(get_db)):
     """Reboot an ONU by serial number from any OLT"""
     sn = sn.strip()
@@ -372,7 +372,7 @@ async def reboot_any_onu_by_serial(sn: str,
                     detail=f"Could not connect to OLT device {device.name}"
                 )
 
-            ont_result = await adapter.get_ont_path_by_serial_redis(sn)
+            ont_result = await adapter.get_ont_path_by_serial_redis(sn, test)
             if ont_result["status"] != "success":
                 message = (ont_result.get("message") or "").lower()
                 if message == "onu not found":
